@@ -89,7 +89,6 @@ async function fetchStock(symbol: string): Promise<Candle[]> {
       if (rows.length >= 30) break;
     }
   }
-  if (rows.length < 30) throw new Error(`Te weinig data voor ${t}`);
   return rows;
 }
 
@@ -97,8 +96,9 @@ async function fetchCrypto(symbol: string): Promise<Candle[]> {
   const id = symbol.toLowerCase().replace(/\s+/g, "-");
   const url = `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(id)}/market_chart?vs_currency=eur&days=200&interval=daily`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error("Onbekend crypto symbool (bv. bitcoin, ethereum, solana)");
+  if (!res.ok) return [];
   const json = (await res.json()) as { prices: [number, number][] };
+  if (!Array.isArray(json.prices)) return [];
   return json.prices.map(([t, p]) => ({
     date: new Date(t).toISOString().slice(0, 10),
     close: p,
@@ -173,6 +173,18 @@ export const analyzeAsset = createServerFn({ method: "POST" })
         symbol: data.symbol.trim(),
         market: data.market,
         error: (error as Error).message,
+      };
+    }
+
+    if (candles.length < 30) {
+      return {
+        ok: false as const,
+        symbol: data.symbol.trim(),
+        market: data.market,
+        error:
+          data.market === "stock"
+            ? `Geen koersdata gevonden voor ${data.symbol.trim().toUpperCase()}. Controleer het symbool of kies een preset.`
+            : "Onbekend crypto symbool. Gebruik bijvoorbeeld bitcoin, ethereum of solana.",
       };
     }
 
