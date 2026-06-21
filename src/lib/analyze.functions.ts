@@ -9,19 +9,22 @@ const InputSchema = z.object({
 type Candle = { date: string; close: number };
 
 async function fetchStock(symbol: string): Promise<Candle[]> {
-  const t = symbol.toUpperCase();
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(t)}?range=1y&interval=1d`;
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-      Accept: "application/json",
-    },
-  });
-  if (!res.ok) throw new Error(`Kon koersdata niet ophalen (${res.status})`);
-  const json: any = await res.json();
-  const result = json?.chart?.result?.[0];
-  if (!result) throw new Error(`Onbekend ticker symbool: ${t}`);
+  const t = symbol.trim().toUpperCase().replace(/\./g, "-");
+  const headers = {
+    "User-Agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    Accept: "application/json",
+  };
+  let result: any = null;
+  for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
+    const url = `https://${host}/v8/finance/chart/${encodeURIComponent(t)}?range=1y&interval=1d`;
+    const res = await fetch(url, { headers });
+    if (!res.ok) continue;
+    const json: any = await res.json();
+    result = json?.chart?.result?.[0];
+    if (result) break;
+  }
+  if (!result) throw new Error(`Geen koersdata gevonden voor ${t}. Controleer het symbool of kies een preset.`);
   const timestamps: number[] = result.timestamp ?? [];
   const closes: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
   const rows: Candle[] = [];
@@ -103,10 +106,20 @@ function macd(values: number[]) {
 export const analyzeAsset = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => InputSchema.parse(d))
   .handler(async ({ data }) => {
-    const candles =
-      data.market === "stock"
-        ? await fetchStock(data.symbol)
-        : await fetchCrypto(data.symbol);
+    let candles: Candle[];
+    try {
+      candles =
+        data.market === "stock"
+          ? await fetchStock(data.symbol)
+          : await fetchCrypto(data.symbol);
+    } catch (error) {
+      return {
+        ok: false as const,
+        symbol: data.symbol.trim(),
+        market: data.market,
+        error: (error as Error).message,
+      };
+    }
 
     const closes = candles.map((c) => c.close);
     const sma20 = sma(closes, 20);
@@ -201,5 +214,5 @@ Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidenc
       };
     });
 
-    return { symbol: data.symbol.toUpperCase(), market: data.market, indicators, ai, chart };
+    return { ok: true as const, symbol: data.symbol.toUpperCase(), market: data.market, indicators, ai, chart };
   });
