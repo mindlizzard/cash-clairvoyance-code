@@ -476,5 +476,12 @@ Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidenc
       ai,
       chart,
       history,
+      stats: {
+        samples: rets.length,
+        driftPct: +(drift * 100).toFixed(4),
+        dailyVolPct: +(vol * 100).toFixed(3),
+        annualVolPct: +annualVolPct.toFixed(2),
+        slopePctPerDay: +slopePctPerDay.toFixed(4),
+      },
     };
   });
