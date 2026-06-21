@@ -1,0 +1,195 @@
+import { createServerFn } from "@tanstack/react-start";
+import { z } from "zod";
+
+const InputSchema = z.object({
+  symbol: z.string().min(1).max(40),
+  market: z.enum(["stock", "crypto"]),
+});
+
+type Candle = { date: string; close: number };
+
+async function fetchStock(symbol: string): Promise<Candle[]> {
+  const s = symbol.toLowerCase().includes(".") ? symbol.toLowerCase() : `${symbol.toLowerCase()}.us`;
+  const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(s)}&i=d`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Kon koersdata niet ophalen (Stooq)");
+  const text = await res.text();
+  const lines = text.trim().split("\n").slice(1);
+  const rows: Candle[] = [];
+  for (const line of lines) {
+    const parts = line.split(",");
+    const c = parseFloat(parts[4]);
+    if (!isNaN(c)) rows.push({ date: parts[0], close: c });
+  }
+  if (rows.length < 30) throw new Error("Onbekend ticker symbool");
+  return rows.slice(-220);
+}
+
+async function fetchCrypto(symbol: string): Promise<Candle[]> {
+  const id = symbol.toLowerCase().replace(/\s+/g, "-");
+  const url = `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(id)}/market_chart?vs_currency=eur&days=200&interval=daily`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Onbekend crypto symbool (bv. bitcoin, ethereum, solana)");
+  const json = (await res.json()) as { prices: [number, number][] };
+  return json.prices.map(([t, p]) => ({
+    date: new Date(t).toISOString().slice(0, 10),
+    close: p,
+  }));
+}
+
+function sma(values: number[], period: number): (number | null)[] {
+  const out: (number | null)[] = [];
+  for (let i = 0; i < values.length; i++) {
+    if (i < period - 1) { out.push(null); continue; }
+    let s = 0;
+    for (let j = i - period + 1; j <= i; j++) s += values[j];
+    out.push(s / period);
+  }
+  return out;
+}
+
+function ema(values: number[], period: number): number[] {
+  const k = 2 / (period + 1);
+  const out: number[] = [values[0]];
+  for (let i = 1; i < values.length; i++) {
+    out.push(values[i] * k + out[i - 1] * (1 - k));
+  }
+  return out;
+}
+
+function rsi(values: number[], period = 14): (number | null)[] {
+  const out: (number | null)[] = [null];
+  let avgG = 0, avgL = 0;
+  for (let i = 1; i < values.length; i++) {
+    const diff = values[i] - values[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    if (i <= period) {
+      avgG += gain; avgL += loss;
+      if (i === period) {
+        avgG /= period; avgL /= period;
+        const rs = avgL === 0 ? 100 : avgG / avgL;
+        out.push(100 - 100 / (1 + rs));
+      } else out.push(null);
+    } else {
+      avgG = (avgG * (period - 1) + gain) / period;
+      avgL = (avgL * (period - 1) + loss) / period;
+      const rs = avgL === 0 ? 100 : avgG / avgL;
+      out.push(100 - 100 / (1 + rs));
+    }
+  }
+  return out;
+}
+
+function macd(values: number[]) {
+  const e12 = ema(values, 12);
+  const e26 = ema(values, 26);
+  const line = values.map((_, i) => e12[i] - e26[i]);
+  const signal = ema(line, 9);
+  const hist = line.map((v, i) => v - signal[i]);
+  return { line, signal, hist };
+}
+
+export const analyzeAsset = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) => InputSchema.parse(d))
+  .handler(async ({ data }) => {
+    const candles =
+      data.market === "stock"
+        ? await fetchStock(data.symbol)
+        : await fetchCrypto(data.symbol);
+
+    const closes = candles.map((c) => c.close);
+    const sma20 = sma(closes, 20);
+    const sma50 = sma(closes, 50);
+    const rsiArr = rsi(closes, 14);
+    const macdRes = macd(closes);
+
+    const last = closes.length - 1;
+    const price = closes[last];
+    const prev = closes[last - 1] ?? price;
+    const changePct = ((price - prev) / prev) * 100;
+    const weekAgo = closes[Math.max(0, last - 5)];
+    const monthAgo = closes[Math.max(0, last - 22)];
+    const indicators = {
+      price,
+      changePct,
+      sma20: sma20[last],
+      sma50: sma50[last],
+      rsi: rsiArr[last],
+      macd: macdRes.line[last],
+      macdSignal: macdRes.signal[last],
+      macdHist: macdRes.hist[last],
+      weekChangePct: ((price - weekAgo) / weekAgo) * 100,
+      monthChangePct: ((price - monthAgo) / monthAgo) * 100,
+    };
+
+    const apiKey = process.env.LOVABLE_API_KEY;
+    let ai: {
+      signal: "BUY" | "SELL" | "HOLD";
+      confidence: number;
+      shortTerm: string;
+      longTerm: string;
+      reasoning: string;
+      risks: string;
+    } = {
+      signal: "HOLD",
+      confidence: 50,
+      shortTerm: "",
+      longTerm: "",
+      reasoning: "",
+      risks: "",
+    };
+
+    if (apiKey) {
+      const prompt = `Je bent een ervaren technisch analist. Geef een nuchtere analyse voor ${data.symbol} (${data.market === "stock" ? "aandeel/ETF" : "crypto"}).
+
+Huidige indicatoren:
+- Prijs: ${price.toFixed(4)}
+- Dagverandering: ${changePct.toFixed(2)}%
+- Week: ${indicators.weekChangePct.toFixed(2)}%, Maand: ${indicators.monthChangePct.toFixed(2)}%
+- SMA20: ${indicators.sma20?.toFixed(4)}, SMA50: ${indicators.sma50?.toFixed(4)}
+- RSI(14): ${indicators.rsi?.toFixed(1)}
+- MACD: ${indicators.macd?.toFixed(4)} signaal: ${indicators.macdSignal?.toFixed(4)} hist: ${indicators.macdHist?.toFixed(4)}
+
+Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidence (0-100 getal), shortTerm (verwachting 1-2 weken, 1 zin NL), longTerm (3-6 maanden, 1 zin NL), reasoning (2-3 zinnen NL over de indicatoren), risks (1-2 zinnen NL).`;
+
+      try {
+        const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Lovable-API-Key": apiKey,
+          },
+          body: JSON.stringify({
+            model: "google/gemini-3-flash-preview",
+            messages: [
+              { role: "system", content: "Je bent een Nederlandse technische beursanalist. Antwoord altijd in valide JSON." },
+              { role: "user", content: prompt },
+            ],
+            response_format: { type: "json_object" },
+          }),
+        });
+        if (r.status === 429) throw new Error("AI rate limit, probeer zo opnieuw");
+        if (r.status === 402) throw new Error("AI credits op");
+        if (!r.ok) throw new Error(`AI fout (${r.status})`);
+        const j = await r.json();
+        const content = j.choices?.[0]?.message?.content ?? "{}";
+        const parsed = JSON.parse(content);
+        ai = { ...ai, ...parsed };
+      } catch (e) {
+        ai.reasoning = `AI-prognose niet beschikbaar: ${(e as Error).message}`;
+      }
+    }
+
+    const chart = candles.slice(-90).map((c, i) => {
+      const idx = candles.length - 90 + i;
+      return {
+        date: c.date,
+        close: c.close,
+        sma20: sma20[idx],
+        sma50: sma50[idx],
+      };
+    });
+
+    return { symbol: data.symbol.toUpperCase(), market: data.market, indicators, ai, chart };
+  });
