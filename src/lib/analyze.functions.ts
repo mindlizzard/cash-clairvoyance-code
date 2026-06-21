@@ -732,6 +732,24 @@ Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidenc
         dailyVolPct: +(vol * 100).toFixed(3),
         annualVolPct: +annualVolPct.toFixed(2),
         slopePctPerDay: +slopePctPerDay.toFixed(4),
+        regime,
+      },
+      monteCarlo: {
+        base: mcBase,
+        regime: mcRegime,
+      },
+      macro: {
+        vix: macro.vix,
+        dxy: macro.dxy,
+        tnx: macro.tnx,
+        spxChangePct: macro.spxChangePct,
+        btcChangePct: macro.btcChangePct,
+      },
+      earnings: earningsInDays != null ? {
+        date: earningsIso,
+        inDays: earningsInDays,
+      } : null,
+      fearGreed: fng,
       },
     };
   });
