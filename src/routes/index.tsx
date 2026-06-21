@@ -66,7 +66,9 @@ function Home() {
       analyze({ data: vars }),
   });
 
-  const result = mutation.data;
+  const response = mutation.data;
+  const result = response?.ok ? response : null;
+  const dataError = response && !response.ok ? response.error : null;
 
   const submit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -162,9 +164,9 @@ function Home() {
           </div>
         </Card>
 
-        {mutation.isError && (
+        {(mutation.isError || dataError) && (
           <div className="mt-6 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-            {(mutation.error as Error).message}
+            {dataError ?? (mutation.error as Error).message}
           </div>
         )}
 
@@ -298,7 +300,7 @@ function Home() {
         )}
 
         <footer className="mt-12 border-t border-border/60 pt-6 text-center text-xs text-muted-foreground">
-          Koersdata: Stooq & CoinGecko. Analyse via Lovable AI. Niet bedoeld als financieel advies.
+          Koersdata: Yahoo Finance & CoinGecko. Analyse via Lovable AI. Niet bedoeld als financieel advies.
         </footer>
       </main>
     </div>
