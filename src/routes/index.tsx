@@ -409,6 +409,93 @@ function rsiHint(rsi: number | null | undefined) {
   return "Neutraal";
 }
 
+function EntryTiming({
+  indicators,
+}: {
+  indicators: {
+    price: number;
+    rsi: number | null;
+    sma20: number | null;
+    sma50: number | null;
+    macdHist: number | null;
+    weekChangePct: number;
+    monthChangePct: number;
+  };
+}) {
+  let score = 50;
+  const reasons: string[] = [];
+
+  const rsi = indicators.rsi;
+  if (rsi != null) {
+    if (rsi < 30) { score += 25; reasons.push(`RSI ${rsi.toFixed(0)} (oversold) — koopkans`); }
+    else if (rsi < 45) { score += 12; reasons.push(`RSI ${rsi.toFixed(0)} (laag-neutraal) — gunstig`); }
+    else if (rsi > 70) { score -= 25; reasons.push(`RSI ${rsi.toFixed(0)} (overbought) — wacht op dip`); }
+    else if (rsi > 60) { score -= 10; reasons.push(`RSI ${rsi.toFixed(0)} (verhit) — voorzichtig`); }
+    else reasons.push(`RSI ${rsi.toFixed(0)} — neutraal`);
+  }
+
+  if (indicators.sma20 && indicators.sma50) {
+    const trend = ((indicators.sma20 - indicators.sma50) / indicators.sma50) * 100;
+    if (trend > 1) { score += 10; reasons.push("Opwaartse trend (SMA20 > SMA50)"); }
+    else if (trend < -1) { score -= 10; reasons.push("Neerwaartse trend (SMA20 < SMA50)"); }
+  }
+
+  const hist = indicators.macdHist ?? 0;
+  if (hist > 0) { score += 8; reasons.push("MACD bullish histogram"); }
+  else if (hist < 0) { score -= 8; reasons.push("MACD bearish histogram"); }
+
+  if (indicators.weekChangePct < -5) { score += 8; reasons.push("Pullback van >5% deze week"); }
+  if (indicators.weekChangePct > 10) { score -= 8; reasons.push("Rally van >10% deze week"); }
+
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
+  let verdict: { label: string; tone: "good" | "warn" | "bad"; advice: string };
+  if (score >= 65) verdict = { label: "Gunstig moment", tone: "good", advice: "Indicatoren wijzen op een goed instapmoment. Overweeg gespreid in te leggen (bv. 2–3 tranches)." };
+  else if (score >= 45) verdict = { label: "Neutraal", tone: "warn", advice: "Geen duidelijk signaal. Spreid je inleg over enkele weken (Dollar-Cost Averaging) om timing-risico te beperken." };
+  else verdict = { label: "Wacht op betere prijs", tone: "bad", advice: "Markt is overhit of in dalende trend. Wacht op een pullback of bevestiging van bodem." };
+
+  const toneCls =
+    verdict.tone === "good" ? "bg-accent text-accent-foreground" :
+    verdict.tone === "bad" ? "bg-destructive text-destructive-foreground" :
+    "bg-secondary text-secondary-foreground";
+
+  return (
+    <Card className="border-border/60 bg-card p-5">
+      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h4 className="text-lg font-semibold">Beste instapmoment</h4>
+          <p className="text-xs text-muted-foreground">Timing-score op basis van RSI, trend en momentum.</p>
+        </div>
+        <div className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold uppercase tracking-wide ${toneCls}`}>
+          {verdict.label} · {score}/100
+        </div>
+      </div>
+
+      <div className="mb-3 h-2 w-full overflow-hidden rounded-full bg-secondary">
+        <div
+          className={`h-full ${verdict.tone === "good" ? "bg-accent" : verdict.tone === "bad" ? "bg-destructive" : "bg-primary"}`}
+          style={{ width: `${score}%` }}
+        />
+      </div>
+
+      <p className="mb-3 text-sm text-foreground">{verdict.advice}</p>
+
+      <ul className="space-y-1 text-xs text-muted-foreground">
+        {reasons.map((r) => (
+          <li key={r} className="flex items-start gap-2">
+            <span className="mt-1 h-1 w-1 rounded-full bg-primary" />
+            {r}
+          </li>
+        ))}
+      </ul>
+
+      <p className="mt-4 text-[11px] text-muted-foreground">
+        Tip: spreid je inleg via DCA (bv. wekelijks of maandelijks) om het risico van slechte timing te verkleinen.
+      </p>
+    </Card>
+  );
+}
+
 function ForecastTable({
   forecasts,
   amount,
