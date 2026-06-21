@@ -272,6 +272,152 @@ function linRegSlope(values: number[]): number {
   return den === 0 ? 0 : num / den;
 }
 
+/** Average True Range (gemiddelde 14-daagse echte range). */
+function atr(candles: Candle[], period = 14): number {
+  if (candles.length < period + 1) return 0;
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i];
+    const prev = candles[i - 1];
+    const hi = c.high ?? c.close;
+    const lo = c.low ?? c.close;
+    const tr = Math.max(hi - lo, Math.abs(hi - prev.close), Math.abs(lo - prev.close));
+    trs.push(tr);
+  }
+  const last = trs.slice(-period);
+  return last.reduce((s, x) => s + x, 0) / last.length;
+}
+
+/** On-Balance Volume — laatste waarde. */
+function obvLast(candles: Candle[]): number | null {
+  let v = 0;
+  let any = false;
+  for (let i = 1; i < candles.length; i++) {
+    const vol = candles[i].volume;
+    if (vol == null) continue;
+    any = true;
+    if (candles[i].close > candles[i - 1].close) v += vol;
+    else if (candles[i].close < candles[i - 1].close) v -= vol;
+  }
+  return any ? v : null;
+}
+
+/** VWAP over de laatste `period` dagen (typical price * volume / sum volume). */
+function vwap(candles: Candle[], period = 20): number | null {
+  const last = candles.slice(-period);
+  let num = 0, den = 0;
+  for (const c of last) {
+    if (c.volume == null) continue;
+    const tp = ((c.high ?? c.close) + (c.low ?? c.close) + c.close) / 3;
+    num += tp * c.volume;
+    den += c.volume;
+  }
+  return den > 0 ? num / den : null;
+}
+
+/**
+ * EWMA volatiliteit (RiskMetrics, lambda=0.94) — vangt vol-clustering op
+ * zonder volledige GARCH. Geeft dag-sigma.
+ */
+function ewmaVol(returns: number[], lambda = 0.94): number {
+  if (returns.length < 5) return stdev(returns);
+  let v = returns[0] * returns[0];
+  for (let i = 1; i < returns.length; i++) {
+    v = lambda * v + (1 - lambda) * returns[i] * returns[i];
+  }
+  return Math.sqrt(v);
+}
+
+type Regime = "bull" | "bear" | "sideways";
+
+function detectRegime(closes: number[], atrPct: number): Regime {
+  if (closes.length < 200) return "sideways";
+  const last200 = closes.slice(-200);
+  const slope = linRegSlope(last200) / closes[closes.length - 1] * 100; // %/dag
+  if (slope > 0.05 && atrPct < 4) return "bull";
+  if (slope < -0.05) return "bear";
+  return "sideways";
+}
+
+/** Fetch macro context (VIX, DXY, 10Y rente, SPX, BTC) in parallel. */
+async function fetchMacro(): Promise<{
+  vix: number | null;
+  dxy: number | null;
+  tnx: number | null;
+  spxChangePct: number | null;
+  btcChangePct: number | null;
+}> {
+  const fetchLast = async (sym: string): Promise<{ price: number; prev: number } | null> => {
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=5d&interval=1d`;
+      const r = await fetch(url, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        },
+      });
+      if (!r.ok) return null;
+      const j: any = await r.json();
+      const closes: number[] = (j?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? []).filter(
+        (x: any) => typeof x === "number",
+      );
+      if (closes.length < 2) return null;
+      return { price: closes[closes.length - 1], prev: closes[closes.length - 2] };
+    } catch {
+      return null;
+    }
+  };
+  const [vix, dxy, tnx, spx, btc] = await Promise.all([
+    fetchLast("^VIX"),
+    fetchLast("DX-Y.NYB"),
+    fetchLast("^TNX"),
+    fetchLast("^GSPC"),
+    fetchLast("BTC-USD"),
+  ]);
+  return {
+    vix: vix?.price ?? null,
+    dxy: dxy?.price ?? null,
+    tnx: tnx?.price ?? null,
+    spxChangePct: spx ? ((spx.price - spx.prev) / spx.prev) * 100 : null,
+    btcChangePct: btc ? ((btc.price - btc.prev) / btc.prev) * 100 : null,
+  };
+}
+
+/** Probeer earnings datum op te halen via Yahoo quoteSummary. */
+async function fetchEarningsDate(symbol: string): Promise<string | null> {
+  try {
+    const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=calendarEvents`;
+    const r = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+      },
+    });
+    if (!r.ok) return null;
+    const j: any = await r.json();
+    const ev = j?.quoteSummary?.result?.[0]?.calendarEvents?.earnings?.earningsDate?.[0];
+    const raw = ev?.raw;
+    if (!raw) return null;
+    return new Date(raw * 1000).toISOString();
+  } catch {
+    return null;
+  }
+}
+
+/** Fear & Greed (crypto, alternative.me free). */
+async function fetchCryptoFearGreed(): Promise<{ value: number; label: string } | null> {
+  try {
+    const r = await fetch("https://api.alternative.me/fng/?limit=1");
+    if (!r.ok) return null;
+    const j: any = await r.json();
+    const x = j?.data?.[0];
+    if (!x) return null;
+    return { value: Number(x.value), label: String(x.value_classification) };
+  } catch {
+    return null;
+  }
+}
+
 export const analyzeAsset = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => InputSchema.parse(d))
   .handler(async ({ data }) => {
