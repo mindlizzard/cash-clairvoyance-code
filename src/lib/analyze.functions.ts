@@ -21,6 +21,41 @@ function parseYahooCandles(result: any): Candle[] {
   return rows;
 }
 
+function parseNasdaqPrice(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const parsed = Number(value.replace(/[$,]/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function fetchNasdaqStock(symbol: string, assetClass: "stocks" | "etf"): Promise<Candle[]> {
+  const end = new Date();
+  const start = new Date(end);
+  start.setFullYear(start.getFullYear() - 1);
+  const format = (date: Date) => date.toISOString().slice(0, 10);
+  const url = `https://api.nasdaq.com/api/quote/${encodeURIComponent(symbol)}/historical?assetclass=${assetClass}&fromdate=${format(start)}&todate=${format(end)}&limit=9999`;
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+      Accept: "application/json",
+      "Accept-Language": "en-US,en;q=0.9",
+      Origin: "https://www.nasdaq.com",
+      Referer: `https://www.nasdaq.com/market-activity/${assetClass}/${symbol.toLowerCase()}/historical`,
+    },
+  });
+  if (!res.ok) return [];
+  const json: any = await res.json();
+  const rows = json?.data?.tradesTable?.rows ?? [];
+  return rows
+    .map((row: any) => {
+      const [month, day, year] = String(row?.date ?? "").split("/");
+      const close = parseNasdaqPrice(row?.close);
+      if (!month || !day || !year || close == null) return null;
+      return { date: `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`, close };
+    })
+    .filter((row: Candle | null): row is Candle => row != null)
+    .reverse();
+}
+
 async function fetchStock(symbol: string): Promise<Candle[]> {
   const t = symbol.trim().toUpperCase().replace(/\./g, "-");
   const headers = {
@@ -46,6 +81,12 @@ async function fetchStock(symbol: string): Promise<Candle[]> {
       const sparkJson: any = await sparkRes.json();
       const sparkResult = sparkJson?.spark?.result?.[0]?.response?.[0];
       rows = parseYahooCandles(sparkResult);
+    }
+  }
+  if (rows.length < 30) {
+    for (const assetClass of ["stocks", "etf"] as const) {
+      rows = await fetchNasdaqStock(t, assetClass);
+      if (rows.length >= 30) break;
     }
   }
   if (rows.length < 30) throw new Error(`Te weinig data voor ${t}`);
