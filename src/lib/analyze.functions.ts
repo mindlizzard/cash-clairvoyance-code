@@ -750,6 +750,5 @@ Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidenc
         inDays: earningsInDays,
       } : null,
       fearGreed: fng,
-      },
     };
   });
