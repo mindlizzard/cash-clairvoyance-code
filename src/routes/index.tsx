@@ -452,7 +452,9 @@ function AnalysePanel({
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h4 className="text-lg font-semibold">Voorspellingen per model</h4>
-            <p className="text-xs text-muted-foreground">Verwacht rendement (%) en geprojecteerde waarde van je inleg.</p>
+            <p className="text-xs text-muted-foreground">
+              Verwacht rendement (%) ± 1σ-band (historische volatiliteit) en geprojecteerde waarde.
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground">Inleg €</span>
@@ -466,6 +468,14 @@ function AnalysePanel({
           </div>
         </div>
         <ForecastTable forecasts={result.ai.forecasts} amount={Number(amount) || 0} />
+        {result.stats && (
+          <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-4">
+            <div><span className="text-foreground font-medium">{result.stats.samples}</span> dagen historie</div>
+            <div>Drift: <span className="text-foreground font-medium">{result.stats.driftPct.toFixed(3)}%/d</span></div>
+            <div>Volatiliteit: <span className="text-foreground font-medium">{result.stats.annualVolPct.toFixed(1)}%/j</span></div>
+            <div>Regressietrend 90d: <span className="text-foreground font-medium">{result.stats.slopePctPerDay.toFixed(3)}%/d</span></div>
+          </div>
+        )}
       </Card>
 
       <EntryTiming indicators={result.indicators} />
