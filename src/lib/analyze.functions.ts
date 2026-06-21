@@ -442,6 +442,9 @@ export const analyzeAsset = createServerFn({ method: "POST" })
     const macdRes = macd(closes);
     const bb = bollinger(closes, 20, 2);
     const stoch = stochastic(closes, 14, 3);
+    const atrVal = atr(candles, 14);
+    const obvVal = obvLast(candles);
+    const vwapVal = vwap(candles, 20);
 
     const last = closes.length - 1;
     const price = closes[last];
@@ -463,6 +466,10 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       stochK: stoch.k[last],
       stochD: stoch.d[last],
       volume: candles[last].volume ?? null,
+      atr: atrVal,
+      atrPct: price > 0 ? (atrVal / price) * 100 : 0,
+      obv: obvVal,
+      vwap: vwapVal,
       weekChangePct: ((price - weekAgo) / weekAgo) * 100,
       monthChangePct: ((price - monthAgo) / monthAgo) * 100,
     };
@@ -471,13 +478,40 @@ export const analyzeAsset = createServerFn({ method: "POST" })
     const rets = logReturns(closes);                       // dagelijkse log returns
     const recent = rets.slice(-252);                       // ~1 handelsjaar
     const drift = mean(recent);                            // dagelijkse drift
-    const vol = stdev(recent);                             // dagelijkse volatiliteit
+    const volSimple = stdev(recent);                       // simpel dagelijkse vol
+    const volEwma = ewmaVol(recent, 0.94);                 // EWMA (vangt clustering)
+    const vol = volEwma || volSimple;                      // gebruik EWMA als hoofd-vol
     const annualVolPct = vol * Math.sqrt(252) * 100;
 
     // Regressie-trend over laatste 90 dagen → %/dag
     const last90 = closes.slice(-90);
     const slope90 = linRegSlope(last90);
     const slopePctPerDay = price > 0 ? (slope90 / price) * 100 : 0;
+
+    // Regime detectie
+    const regime = detectRegime(closes, indicators.atrPct);
+
+    // ---- Macro + earnings + sentiment (parallel) ----
+    const [macro, earningsIso, fng] = await Promise.all([
+      fetchMacro().catch(() => ({
+        vix: null, dxy: null, tnx: null, spxChangePct: null, btcChangePct: null,
+      })),
+      data.market === "stock" ? fetchEarningsDate(data.symbol.trim().toUpperCase().replace(/\./g, "-")) : Promise.resolve(null),
+      data.market === "crypto" ? fetchCryptoFearGreed() : Promise.resolve(null),
+    ]);
+
+    const earningsInDays = (() => {
+      if (!earningsIso) return null;
+      const ms = new Date(earningsIso).getTime() - Date.now();
+      const d = Math.round(ms / 86_400_000);
+      return isFinite(d) ? d : null;
+    })();
+
+    // ---- Monte Carlo per horizon ----
+    const mcBase = simulateAllHorizons(drift, vol, 1000);
+    // Regime-aangepaste MC: in bear regime drift -50%, in bull +20%
+    const regimeMu = regime === "bull" ? drift * 1.2 + 0.0005 : regime === "bear" ? drift * 0.5 - 0.0005 : drift;
+    const mcRegime = simulateAllHorizons(regimeMu, vol, 1000);
 
     // Helper: convert dagelijkse log-return naar geprojecteerde % over N dagen
     const proj = (mu: number, days: number) => (Math.exp(mu * days) - 1) * 100;
