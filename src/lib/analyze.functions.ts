@@ -8,6 +8,20 @@ const InputSchema = z.object({
 
 type Candle = { date: string; close: number };
 
+function dataError(symbol: string, market: "stock" | "crypto", message?: string) {
+  return {
+    ok: false as const,
+    fallback: true as const,
+    symbol: symbol.trim(),
+    market,
+    error:
+      message ??
+      (market === "stock"
+        ? `Geen koersdata gevonden voor ${symbol.trim().toUpperCase()}. Controleer het symbool of kies een preset.`
+        : "Onbekend crypto symbool. Gebruik bijvoorbeeld bitcoin, ethereum of solana."),
+  };
+}
+
 function parseYahooCandles(result: any): Candle[] {
   const timestamps: number[] = result?.timestamp ?? [];
   const closes: (number | null)[] = result?.indicators?.quote?.[0]?.close ?? [];
@@ -58,6 +72,7 @@ async function fetchNasdaqStock(symbol: string, assetClass: "stocks" | "etf"): P
 
 async function fetchStock(symbol: string): Promise<Candle[]> {
   const t = symbol.trim().toUpperCase().replace(/\./g, "-");
+  try {
   const headers = {
     "User-Agent":
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -90,9 +105,14 @@ async function fetchStock(symbol: string): Promise<Candle[]> {
     }
   }
   return rows;
+  } catch (error) {
+    console.error("Stock provider error", { symbol: t, error: (error as Error).message });
+    return [];
+  }
 }
 
 async function fetchCrypto(symbol: string): Promise<Candle[]> {
+  try {
   const id = symbol.toLowerCase().replace(/\s+/g, "-");
   const url = `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(id)}/market_chart?vs_currency=eur&days=200&interval=daily`;
   const res = await fetch(url);
@@ -103,6 +123,10 @@ async function fetchCrypto(symbol: string): Promise<Candle[]> {
     date: new Date(t).toISOString().slice(0, 10),
     close: p,
   }));
+  } catch (error) {
+    console.error("Crypto provider error", { symbol, error: (error as Error).message });
+    return [];
+  }
 }
 
 function sma(values: number[], period: number): (number | null)[] {
@@ -168,24 +192,11 @@ export const analyzeAsset = createServerFn({ method: "POST" })
           ? await fetchStock(data.symbol)
           : await fetchCrypto(data.symbol);
     } catch (error) {
-      return {
-        ok: false as const,
-        symbol: data.symbol.trim(),
-        market: data.market,
-        error: (error as Error).message,
-      };
+      return dataError(data.symbol, data.market, (error as Error).message);
     }
 
     if (candles.length < 30) {
-      return {
-        ok: false as const,
-        symbol: data.symbol.trim(),
-        market: data.market,
-        error:
-          data.market === "stock"
-            ? `Geen koersdata gevonden voor ${data.symbol.trim().toUpperCase()}. Controleer het symbool of kies een preset.`
-            : "Onbekend crypto symbool. Gebruik bijvoorbeeld bitcoin, ethereum of solana.",
-      };
+      return dataError(data.symbol, data.market);
     }
 
     const closes = candles.map((c) => c.close);
