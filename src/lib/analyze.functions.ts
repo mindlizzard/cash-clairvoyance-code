@@ -232,6 +232,12 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       longTerm: string;
       reasoning: string;
       risks: string;
+      forecasts: {
+        model: string;
+        day: number;
+        week: number;
+        month: number;
+      }[];
     } = {
       signal: "HOLD",
       confidence: 50,
@@ -239,7 +245,38 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       longTerm: "",
       reasoning: "",
       risks: "",
+      forecasts: [],
     };
+
+    // Heuristische voorspellingen (altijd beschikbaar, ook zonder AI)
+    const trendPct = (indicators.sma20 && indicators.sma50)
+      ? ((indicators.sma20 - indicators.sma50) / indicators.sma50) * 100
+      : 0;
+    const momentum = indicators.weekChangePct;
+    const rsiBias = indicators.rsi != null ? (50 - indicators.rsi) / 10 : 0; // mean reversion
+    const macdBias = (indicators.macdHist ?? 0) > 0 ? 1 : -1;
+
+    const heuristicForecasts = [
+      {
+        model: "Trendvolger (SMA)",
+        day: +(trendPct * 0.05 + macdBias * 0.1).toFixed(2),
+        week: +(trendPct * 0.25 + macdBias * 0.4).toFixed(2),
+        month: +(trendPct * 0.8 + macdBias * 1.2).toFixed(2),
+      },
+      {
+        model: "Momentum",
+        day: +(momentum * 0.05).toFixed(2),
+        week: +(momentum * 0.35).toFixed(2),
+        month: +(momentum * 1.1 + indicators.monthChangePct * 0.3).toFixed(2),
+      },
+      {
+        model: "Mean Reversion (RSI)",
+        day: +(rsiBias * 0.15).toFixed(2),
+        week: +(rsiBias * 0.6).toFixed(2),
+        month: +(rsiBias * 1.5).toFixed(2),
+      },
+    ];
+    ai.forecasts = heuristicForecasts;
 
     if (apiKey) {
       const prompt = `Je bent een ervaren technisch analist. Geef een nuchtere analyse voor ${data.symbol} (${data.market === "stock" ? "aandeel/ETF" : "crypto"}).
@@ -252,7 +289,7 @@ Huidige indicatoren:
 - RSI(14): ${indicators.rsi?.toFixed(1)}
 - MACD: ${indicators.macd?.toFixed(4)} signaal: ${indicators.macdSignal?.toFixed(4)} hist: ${indicators.macdHist?.toFixed(4)}
 
-Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidence (0-100 getal), shortTerm (verwachting 1-2 weken, 1 zin NL), longTerm (3-6 maanden, 1 zin NL), reasoning (2-3 zinnen NL over de indicatoren), risks (1-2 zinnen NL).`;
+Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidence (0-100 getal), shortTerm (verwachting 1-2 weken, 1 zin NL), longTerm (3-6 maanden, 1 zin NL), reasoning (2-3 zinnen NL over de indicatoren), risks (1-2 zinnen NL), aiForecast { day: getal (%), week: getal (%), month: getal (%) } — realistische procentuele rendementsverwachting.`;
 
       try {
         const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -276,7 +313,19 @@ Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidenc
         const j = await r.json();
         const content = j.choices?.[0]?.message?.content ?? "{}";
         const parsed = JSON.parse(content);
-        ai = { ...ai, ...parsed };
+        const { aiForecast, ...rest } = parsed ?? {};
+        ai = { ...ai, ...rest };
+        if (aiForecast && typeof aiForecast === "object") {
+          ai.forecasts = [
+            {
+              model: "AI Prognose",
+              day: +Number(aiForecast.day ?? 0).toFixed(2),
+              week: +Number(aiForecast.week ?? 0).toFixed(2),
+              month: +Number(aiForecast.month ?? 0).toFixed(2),
+            },
+            ...heuristicForecasts,
+          ];
+        }
       } catch (e) {
         ai.reasoning = `AI-prognose niet beschikbaar: ${(e as Error).message}`;
       }
