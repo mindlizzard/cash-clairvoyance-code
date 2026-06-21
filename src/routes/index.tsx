@@ -34,6 +34,7 @@ import {
 import { analyzeAsset } from "@/lib/analyze.functions";
 import { fetchNews } from "@/lib/news.functions";
 import { backtest, type Strategy } from "@/lib/backtest";
+import { logForecasts, scoreOpenForecasts, getModelStats, type ModelStats } from "@/lib/accuracy";
 import {
   store,
   useStore,
@@ -124,6 +125,22 @@ function Home() {
       if (hit && !a.triggeredAt) store.markTriggered(a.id);
     }
   }, [result, storeData.alerts]);
+
+  // Accuracy tracking: score oude voorspellingen tegen huidige prijs, log nieuwe
+  useEffect(() => {
+    if (!result) return;
+    scoreOpenForecasts({
+      symbol: result.symbol,
+      market: result.market,
+      currentPrice: result.indicators.price,
+    });
+    logForecasts({
+      symbol: result.symbol,
+      market: result.market,
+      price: result.indicators.price,
+      forecasts: result.ai.forecasts,
+    });
+  }, [result?.symbol, result?.market]);
 
   const submit = (e?: React.FormEvent) => {
     e?.preventDefault();
