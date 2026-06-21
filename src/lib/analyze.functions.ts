@@ -8,27 +8,85 @@ const InputSchema = z.object({
 
 type Candle = { date: string; close: number };
 
-async function fetchStock(symbol: string): Promise<Candle[]> {
-  const t = symbol.toUpperCase();
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(t)}?range=1y&interval=1d`;
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-      Accept: "application/json",
-    },
-  });
-  if (!res.ok) throw new Error(`Kon koersdata niet ophalen (${res.status})`);
-  const json: any = await res.json();
-  const result = json?.chart?.result?.[0];
-  if (!result) throw new Error(`Onbekend ticker symbool: ${t}`);
-  const timestamps: number[] = result.timestamp ?? [];
-  const closes: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
+function parseYahooCandles(result: any): Candle[] {
+  const timestamps: number[] = result?.timestamp ?? [];
+  const closes: (number | null)[] = result?.indicators?.quote?.[0]?.close ?? [];
   const rows: Candle[] = [];
   for (let i = 0; i < timestamps.length; i++) {
     const c = closes[i];
     if (typeof c === "number" && !isNaN(c)) {
       rows.push({ date: new Date(timestamps[i] * 1000).toISOString().slice(0, 10), close: c });
+    }
+  }
+  return rows;
+}
+
+function parseNasdaqPrice(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const parsed = Number(value.replace(/[$,]/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function fetchNasdaqStock(symbol: string, assetClass: "stocks" | "etf"): Promise<Candle[]> {
+  const end = new Date();
+  const start = new Date(end);
+  start.setFullYear(start.getFullYear() - 1);
+  const format = (date: Date) => date.toISOString().slice(0, 10);
+  const url = `https://api.nasdaq.com/api/quote/${encodeURIComponent(symbol)}/historical?assetclass=${assetClass}&fromdate=${format(start)}&todate=${format(end)}&limit=9999`;
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+      Accept: "application/json",
+      "Accept-Language": "en-US,en;q=0.9",
+      Origin: "https://www.nasdaq.com",
+      Referer: `https://www.nasdaq.com/market-activity/${assetClass}/${symbol.toLowerCase()}/historical`,
+    },
+  });
+  if (!res.ok) return [];
+  const json: any = await res.json();
+  const rows = json?.data?.tradesTable?.rows ?? [];
+  return rows
+    .map((row: any) => {
+      const [month, day, year] = String(row?.date ?? "").split("/");
+      const close = parseNasdaqPrice(row?.close);
+      if (!month || !day || !year || close == null) return null;
+      return { date: `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`, close };
+    })
+    .filter((row: Candle | null): row is Candle => row != null)
+    .reverse();
+}
+
+async function fetchStock(symbol: string): Promise<Candle[]> {
+  const t = symbol.trim().toUpperCase().replace(/\./g, "-");
+  const headers = {
+    "User-Agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    Accept: "application/json",
+  };
+  let result: any = null;
+  for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
+    const url = `https://${host}/v8/finance/chart/${encodeURIComponent(t)}?range=1y&interval=1d`;
+    const res = await fetch(url, { headers });
+    if (!res.ok) continue;
+    const json: any = await res.json();
+    result = json?.chart?.result?.[0];
+    if (result) break;
+  }
+
+  let rows = parseYahooCandles(result);
+  if (rows.length < 30) {
+    const sparkUrl = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${encodeURIComponent(t)}&range=1y&interval=1d`;
+    const sparkRes = await fetch(sparkUrl, { headers });
+    if (sparkRes.ok) {
+      const sparkJson: any = await sparkRes.json();
+      const sparkResult = sparkJson?.spark?.result?.[0]?.response?.[0];
+      rows = parseYahooCandles(sparkResult);
+    }
+  }
+  if (rows.length < 30) {
+    for (const assetClass of ["stocks", "etf"] as const) {
+      rows = await fetchNasdaqStock(t, assetClass);
+      if (rows.length >= 30) break;
     }
   }
   if (rows.length < 30) throw new Error(`Te weinig data voor ${t}`);
@@ -103,10 +161,20 @@ function macd(values: number[]) {
 export const analyzeAsset = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => InputSchema.parse(d))
   .handler(async ({ data }) => {
-    const candles =
-      data.market === "stock"
-        ? await fetchStock(data.symbol)
-        : await fetchCrypto(data.symbol);
+    let candles: Candle[];
+    try {
+      candles =
+        data.market === "stock"
+          ? await fetchStock(data.symbol)
+          : await fetchCrypto(data.symbol);
+    } catch (error) {
+      return {
+        ok: false as const,
+        symbol: data.symbol.trim(),
+        market: data.market,
+        error: (error as Error).message,
+      };
+    }
 
     const closes = candles.map((c) => c.close);
     const sma20 = sma(closes, 20);
@@ -201,5 +269,5 @@ Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidenc
       };
     });
 
-    return { symbol: data.symbol.toUpperCase(), market: data.market, indicators, ai, chart };
+    return { ok: true as const, symbol: data.symbol.toUpperCase(), market: data.market, indicators, ai, chart };
   });
