@@ -59,6 +59,7 @@ const PRESETS: Record<Market, { symbol: string; label: string }[]> = {
 function Home() {
   const [market, setMarket] = useState<Market>("stock");
   const [symbol, setSymbol] = useState("NVDA");
+  const [amount, setAmount] = useState<string>("1000");
   const analyze = useServerFn(analyzeAsset);
 
   const mutation = useMutation({
@@ -289,6 +290,32 @@ function Home() {
                 <Block title="Analyse" text={result.ai.reasoning || "—"} />
                 <Block title="Risico's" text={result.ai.risks || "—"} tone="warning" />
               </div>
+            </Card>
+
+            {/* Voorspellingen per model + inleg */}
+            <Card className="border-border/60 bg-card p-5">
+              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <h4 className="text-lg font-semibold">Voorspellingen per model</h4>
+                  <p className="text-xs text-muted-foreground">
+                    Verwacht rendement (%) en geprojecteerde waarde van je inleg.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Inleg €</span>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    className="w-32"
+                  />
+                </div>
+              </div>
+              <ForecastTable forecasts={result.ai.forecasts} amount={Number(amount) || 0} />
+              <p className="mt-3 text-[11px] text-muted-foreground">
+                Modellen: trendvolger (SMA/MACD), momentum, mean-reversion (RSI){result.ai.forecasts.some((f) => f.model === "AI Prognose") ? " en AI." : "."} Indicatieve schattingen — geen garantie.
+              </p>
             </Card>
           </div>
         )}
