@@ -784,10 +784,11 @@ function BacktestPanel({ result }: { result: AnalyzeResult | null }) {
   const [strategy, setStrategy] = useState<Strategy>("sma-cross");
   const [initial, setInitial] = useState("1000");
 
-  if (!result) return <EmptyHint text="Analyseer eerst een symbool om te backtesten." />;
-
   const init = Number(initial) || 1000;
-  const bt = useMemo(() => backtest(result.history, strategy, init), [result.history, strategy, init]);
+  const history = result?.history ?? [];
+  const bt = useMemo(() => backtest(history, strategy, init), [history, strategy, init]);
+
+  if (!result) return <EmptyHint text="Analyseer eerst een symbool om te backtesten." />;
 
   const strategies: { key: Strategy; label: string; desc: string }[] = [
     { key: "sma-cross", label: "SMA Crossover (20/50)", desc: "Koop bij SMA20 > SMA50, verkoop bij omkering." },
