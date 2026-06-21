@@ -317,6 +317,9 @@ function Home() {
                 Modellen: trendvolger (SMA/MACD), momentum, mean-reversion (RSI){result.ai.forecasts.some((f) => f.model === "AI Prognose") ? " en AI." : "."} Indicatieve schattingen — geen garantie.
               </p>
             </Card>
+
+            {/* Beste instapmoment */}
+            <EntryTiming indicators={result.indicators} />
           </div>
         )}
 
