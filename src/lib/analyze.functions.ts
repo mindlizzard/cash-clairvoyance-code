@@ -1,12 +1,20 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { simulateAllHorizons } from "./montecarlo";
 
 const InputSchema = z.object({
   symbol: z.string().min(1).max(40),
   market: z.enum(["stock", "crypto"]),
 });
 
-type Candle = { date: string; close: number; volume?: number };
+type Candle = {
+  date: string;
+  open?: number;
+  high?: number;
+  low?: number;
+  close: number;
+  volume?: number;
+};
 
 function dataError(symbol: string, market: "stock" | "crypto", message?: string) {
   return {
@@ -24,17 +32,24 @@ function dataError(symbol: string, market: "stock" | "crypto", message?: string)
 
 function parseYahooCandles(result: any): Candle[] {
   const timestamps: number[] = result?.timestamp ?? [];
-  const closes: (number | null)[] = result?.indicators?.quote?.[0]?.close ?? [];
-  const volumes: (number | null)[] = result?.indicators?.quote?.[0]?.volume ?? [];
+  const q = result?.indicators?.quote?.[0] ?? {};
+  const closes: (number | null)[] = q.close ?? [];
+  const opens: (number | null)[] = q.open ?? [];
+  const highs: (number | null)[] = q.high ?? [];
+  const lows: (number | null)[] = q.low ?? [];
+  const volumes: (number | null)[] = q.volume ?? [];
   const rows: Candle[] = [];
   for (let i = 0; i < timestamps.length; i++) {
     const c = closes[i];
     if (typeof c === "number" && !isNaN(c)) {
-      const v = volumes[i];
+      const num = (x: any) => (typeof x === "number" && !isNaN(x) ? x : undefined);
       rows.push({
         date: new Date(timestamps[i] * 1000).toISOString().slice(0, 10),
+        open: num(opens[i]),
+        high: num(highs[i]),
+        low: num(lows[i]),
         close: c,
-        volume: typeof v === "number" && !isNaN(v) ? v : undefined,
+        volume: num(volumes[i]),
       });
     }
   }
