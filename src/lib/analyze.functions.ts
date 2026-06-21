@@ -8,6 +8,19 @@ const InputSchema = z.object({
 
 type Candle = { date: string; close: number };
 
+function parseYahooCandles(result: any): Candle[] {
+  const timestamps: number[] = result?.timestamp ?? [];
+  const closes: (number | null)[] = result?.indicators?.quote?.[0]?.close ?? [];
+  const rows: Candle[] = [];
+  for (let i = 0; i < timestamps.length; i++) {
+    const c = closes[i];
+    if (typeof c === "number" && !isNaN(c)) {
+      rows.push({ date: new Date(timestamps[i] * 1000).toISOString().slice(0, 10), close: c });
+    }
+  }
+  return rows;
+}
+
 async function fetchStock(symbol: string): Promise<Candle[]> {
   const t = symbol.trim().toUpperCase().replace(/\./g, "-");
   const headers = {
@@ -24,14 +37,15 @@ async function fetchStock(symbol: string): Promise<Candle[]> {
     result = json?.chart?.result?.[0];
     if (result) break;
   }
-  if (!result) throw new Error(`Geen koersdata gevonden voor ${t}. Controleer het symbool of kies een preset.`);
-  const timestamps: number[] = result.timestamp ?? [];
-  const closes: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
-  const rows: Candle[] = [];
-  for (let i = 0; i < timestamps.length; i++) {
-    const c = closes[i];
-    if (typeof c === "number" && !isNaN(c)) {
-      rows.push({ date: new Date(timestamps[i] * 1000).toISOString().slice(0, 10), close: c });
+
+  let rows = parseYahooCandles(result);
+  if (rows.length < 30) {
+    const sparkUrl = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${encodeURIComponent(t)}&range=1y&interval=1d`;
+    const sparkRes = await fetch(sparkUrl, { headers });
+    if (sparkRes.ok) {
+      const sparkJson: any = await sparkRes.json();
+      const sparkResult = sparkJson?.spark?.result?.[0]?.response?.[0];
+      rows = parseYahooCandles(sparkResult);
     }
   }
   if (rows.length < 30) throw new Error(`Te weinig data voor ${t}`);
