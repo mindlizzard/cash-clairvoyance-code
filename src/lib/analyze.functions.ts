@@ -9,20 +9,30 @@ const InputSchema = z.object({
 type Candle = { date: string; close: number };
 
 async function fetchStock(symbol: string): Promise<Candle[]> {
-  const s = symbol.toLowerCase().includes(".") ? symbol.toLowerCase() : `${symbol.toLowerCase()}.us`;
-  const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(s)}&i=d`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Kon koersdata niet ophalen (Stooq)");
-  const text = await res.text();
-  const lines = text.trim().split("\n").slice(1);
+  const t = symbol.toUpperCase();
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(t)}?range=1y&interval=1d`;
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+      Accept: "application/json",
+    },
+  });
+  if (!res.ok) throw new Error(`Kon koersdata niet ophalen (${res.status})`);
+  const json: any = await res.json();
+  const result = json?.chart?.result?.[0];
+  if (!result) throw new Error(`Onbekend ticker symbool: ${t}`);
+  const timestamps: number[] = result.timestamp ?? [];
+  const closes: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
   const rows: Candle[] = [];
-  for (const line of lines) {
-    const parts = line.split(",");
-    const c = parseFloat(parts[4]);
-    if (!isNaN(c)) rows.push({ date: parts[0], close: c });
+  for (let i = 0; i < timestamps.length; i++) {
+    const c = closes[i];
+    if (typeof c === "number" && !isNaN(c)) {
+      rows.push({ date: new Date(timestamps[i] * 1000).toISOString().slice(0, 10), close: c });
+    }
   }
-  if (rows.length < 30) throw new Error("Onbekend ticker symbool");
-  return rows.slice(-220);
+  if (rows.length < 30) throw new Error(`Te weinig data voor ${t}`);
+  return rows;
 }
 
 async function fetchCrypto(symbol: string): Promise<Candle[]> {
