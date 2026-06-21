@@ -59,6 +59,7 @@ const PRESETS: Record<Market, { symbol: string; label: string }[]> = {
 function Home() {
   const [market, setMarket] = useState<Market>("stock");
   const [symbol, setSymbol] = useState("NVDA");
+  const [amount, setAmount] = useState<string>("1000");
   const analyze = useServerFn(analyzeAsset);
 
   const mutation = useMutation({
@@ -290,6 +291,32 @@ function Home() {
                 <Block title="Risico's" text={result.ai.risks || "—"} tone="warning" />
               </div>
             </Card>
+
+            {/* Voorspellingen per model + inleg */}
+            <Card className="border-border/60 bg-card p-5">
+              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <h4 className="text-lg font-semibold">Voorspellingen per model</h4>
+                  <p className="text-xs text-muted-foreground">
+                    Verwacht rendement (%) en geprojecteerde waarde van je inleg.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Inleg €</span>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    className="w-32"
+                  />
+                </div>
+              </div>
+              <ForecastTable forecasts={result.ai.forecasts} amount={Number(amount) || 0} />
+              <p className="mt-3 text-[11px] text-muted-foreground">
+                Modellen: trendvolger (SMA/MACD), momentum, mean-reversion (RSI){result.ai.forecasts.some((f) => f.model === "AI Prognose") ? " en AI." : "."} Indicatieve schattingen — geen garantie.
+              </p>
+            </Card>
           </div>
         )}
 
@@ -377,4 +404,55 @@ function rsiHint(rsi: number | null | undefined) {
   if (rsi >= 70) return "Overbought";
   if (rsi <= 30) return "Oversold";
   return "Neutraal";
+}
+
+function ForecastTable({
+  forecasts,
+  amount,
+}: {
+  forecasts: { model: string; day: number; week: number; month: number }[];
+  amount: number;
+}) {
+  const avg = (key: "day" | "week" | "month") =>
+    forecasts.length ? forecasts.reduce((s, f) => s + f[key], 0) / forecasts.length : 0;
+  const project = (pct: number) => amount * (1 + pct / 100);
+  const fmtPct = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+  const fmtEur = (n: number) =>
+    n.toLocaleString("nl-NL", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+  const toneCls = (n: number) =>
+    n > 0 ? "text-accent" : n < 0 ? "text-destructive" : "text-muted-foreground";
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border/60 text-left text-xs uppercase tracking-wider text-muted-foreground">
+            <th className="py-2 pr-3 font-medium">Model</th>
+            <th className="py-2 px-3 text-right font-medium">Dag</th>
+            <th className="py-2 px-3 text-right font-medium">Week</th>
+            <th className="py-2 px-3 text-right font-medium">Maand</th>
+            <th className="py-2 pl-3 text-right font-medium">Waarde (mnd)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {forecasts.map((f) => (
+            <tr key={f.model} className="border-b border-border/40 last:border-0">
+              <td className="py-2 pr-3 font-medium">{f.model}</td>
+              <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.day)}`}>{fmtPct(f.day)}</td>
+              <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.week)}`}>{fmtPct(f.week)}</td>
+              <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.month)}`}>{fmtPct(f.month)}</td>
+              <td className="py-2 pl-3 text-right tabular-nums">{fmtEur(project(f.month))}</td>
+            </tr>
+          ))}
+          <tr className="bg-secondary/40 font-semibold">
+            <td className="py-2 pr-3">Gemiddeld</td>
+            <td className={`py-2 px-3 text-right tabular-nums ${toneCls(avg("day"))}`}>{fmtPct(avg("day"))}</td>
+            <td className={`py-2 px-3 text-right tabular-nums ${toneCls(avg("week"))}`}>{fmtPct(avg("week"))}</td>
+            <td className={`py-2 px-3 text-right tabular-nums ${toneCls(avg("month"))}`}>{fmtPct(avg("month"))}</td>
+            <td className="py-2 pl-3 text-right tabular-nums">{fmtEur(project(avg("month")))}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
 }
