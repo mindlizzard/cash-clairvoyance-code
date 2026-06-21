@@ -1157,13 +1157,22 @@ function ForecastTable({
   forecasts,
   amount,
 }: {
-  forecasts: { model: string; day: number; week: number; month: number }[];
+  forecasts: {
+    model: string;
+    day: number;
+    week: number;
+    month: number;
+    bandDay?: number;
+    bandWeek?: number;
+    bandMonth?: number;
+  }[];
   amount: number;
 }) {
   const avg = (key: "day" | "week" | "month") =>
     forecasts.length ? forecasts.reduce((s, f) => s + f[key], 0) / forecasts.length : 0;
   const project = (pct: number) => amount * (1 + pct / 100);
   const fmtPct = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+  const fmtBand = (b?: number) => (b != null && b > 0 ? ` ±${b.toFixed(1)}%` : "");
   const fmtEur = (n: number) =>
     n.toLocaleString("nl-NL", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
   const toneCls = (n: number) =>
@@ -1178,17 +1187,24 @@ function ForecastTable({
             <th className="py-2 px-3 text-right font-medium">Dag</th>
             <th className="py-2 px-3 text-right font-medium">Week</th>
             <th className="py-2 px-3 text-right font-medium">Maand</th>
-            <th className="py-2 pl-3 text-right font-medium">Waarde (mnd)</th>
+            <th className="py-2 pl-3 text-right font-medium">Range (mnd)</th>
           </tr>
         </thead>
         <tbody>
           {forecasts.map((f) => (
             <tr key={f.model} className="border-b border-border/40 last:border-0">
               <td className="py-2 pr-3 font-medium">{f.model}</td>
-              <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.day)}`}>{fmtPct(f.day)}</td>
-              <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.week)}`}>{fmtPct(f.week)}</td>
-              <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.month)}`}>{fmtPct(f.month)}</td>
-              <td className="py-2 pl-3 text-right tabular-nums">{fmtEur(project(f.month))}</td>
+              <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.day)}`}>{fmtPct(f.day)}<span className="text-[10px] text-muted-foreground">{fmtBand(f.bandDay)}</span></td>
+              <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.week)}`}>{fmtPct(f.week)}<span className="text-[10px] text-muted-foreground">{fmtBand(f.bandWeek)}</span></td>
+              <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.month)}`}>{fmtPct(f.month)}<span className="text-[10px] text-muted-foreground">{fmtBand(f.bandMonth)}</span></td>
+              <td className="py-2 pl-3 text-right tabular-nums">
+                <div>{fmtEur(project(f.month))}</div>
+                {f.bandMonth != null && amount > 0 && (
+                  <div className="text-[10px] text-muted-foreground">
+                    {fmtEur(project(f.month - f.bandMonth))} – {fmtEur(project(f.month + f.bandMonth))}
+                  </div>
+                )}
+              </td>
             </tr>
           ))}
           <tr className="bg-secondary/40 font-semibold">
