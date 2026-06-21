@@ -405,3 +405,54 @@ function rsiHint(rsi: number | null | undefined) {
   if (rsi <= 30) return "Oversold";
   return "Neutraal";
 }
+
+function ForecastTable({
+  forecasts,
+  amount,
+}: {
+  forecasts: { model: string; day: number; week: number; month: number }[];
+  amount: number;
+}) {
+  const avg = (key: "day" | "week" | "month") =>
+    forecasts.length ? forecasts.reduce((s, f) => s + f[key], 0) / forecasts.length : 0;
+  const project = (pct: number) => amount * (1 + pct / 100);
+  const fmtPct = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+  const fmtEur = (n: number) =>
+    n.toLocaleString("nl-NL", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+  const toneCls = (n: number) =>
+    n > 0 ? "text-accent" : n < 0 ? "text-destructive" : "text-muted-foreground";
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border/60 text-left text-xs uppercase tracking-wider text-muted-foreground">
+            <th className="py-2 pr-3 font-medium">Model</th>
+            <th className="py-2 px-3 text-right font-medium">Dag</th>
+            <th className="py-2 px-3 text-right font-medium">Week</th>
+            <th className="py-2 px-3 text-right font-medium">Maand</th>
+            <th className="py-2 pl-3 text-right font-medium">Waarde (mnd)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {forecasts.map((f) => (
+            <tr key={f.model} className="border-b border-border/40 last:border-0">
+              <td className="py-2 pr-3 font-medium">{f.model}</td>
+              <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.day)}`}>{fmtPct(f.day)}</td>
+              <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.week)}`}>{fmtPct(f.week)}</td>
+              <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.month)}`}>{fmtPct(f.month)}</td>
+              <td className="py-2 pl-3 text-right tabular-nums">{fmtEur(project(f.month))}</td>
+            </tr>
+          ))}
+          <tr className="bg-secondary/40 font-semibold">
+            <td className="py-2 pr-3">Gemiddeld</td>
+            <td className={`py-2 px-3 text-right tabular-nums ${toneCls(avg("day"))}`}>{fmtPct(avg("day"))}</td>
+            <td className={`py-2 px-3 text-right tabular-nums ${toneCls(avg("week"))}`}>{fmtPct(avg("week"))}</td>
+            <td className={`py-2 px-3 text-right tabular-nums ${toneCls(avg("month"))}`}>{fmtPct(avg("month"))}</td>
+            <td className="py-2 pl-3 text-right tabular-nums">{fmtEur(project(avg("month")))}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
