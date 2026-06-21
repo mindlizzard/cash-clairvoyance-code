@@ -6,7 +6,7 @@ const InputSchema = z.object({
   market: z.enum(["stock", "crypto"]),
 });
 
-type Candle = { date: string; close: number };
+type Candle = { date: string; close: number; volume?: number };
 
 function dataError(symbol: string, market: "stock" | "crypto", message?: string) {
   return {
@@ -25,11 +25,17 @@ function dataError(symbol: string, market: "stock" | "crypto", message?: string)
 function parseYahooCandles(result: any): Candle[] {
   const timestamps: number[] = result?.timestamp ?? [];
   const closes: (number | null)[] = result?.indicators?.quote?.[0]?.close ?? [];
+  const volumes: (number | null)[] = result?.indicators?.quote?.[0]?.volume ?? [];
   const rows: Candle[] = [];
   for (let i = 0; i < timestamps.length; i++) {
     const c = closes[i];
     if (typeof c === "number" && !isNaN(c)) {
-      rows.push({ date: new Date(timestamps[i] * 1000).toISOString().slice(0, 10), close: c });
+      const v = volumes[i];
+      rows.push({
+        date: new Date(timestamps[i] * 1000).toISOString().slice(0, 10),
+        close: c,
+        volume: typeof v === "number" && !isNaN(v) ? v : undefined,
+      });
     }
   }
   return rows;
@@ -182,6 +188,42 @@ function macd(values: number[]) {
   return { line, signal, hist };
 }
 
+function bollinger(values: number[], period = 20, mult = 2) {
+  const mid = sma(values, period);
+  const upper: (number | null)[] = [];
+  const lower: (number | null)[] = [];
+  for (let i = 0; i < values.length; i++) {
+    if (i < period - 1) { upper.push(null); lower.push(null); continue; }
+    const m = mid[i] as number;
+    let s = 0;
+    for (let j = i - period + 1; j <= i; j++) s += (values[j] - m) ** 2;
+    const sd = Math.sqrt(s / period);
+    upper.push(m + mult * sd);
+    lower.push(m - mult * sd);
+  }
+  return { upper, mid, lower };
+}
+
+function stochastic(values: number[], period = 14, dPeriod = 3) {
+  const k: (number | null)[] = [];
+  for (let i = 0; i < values.length; i++) {
+    if (i < period - 1) { k.push(null); continue; }
+    let hi = -Infinity, lo = Infinity;
+    for (let j = i - period + 1; j <= i; j++) {
+      if (values[j] > hi) hi = values[j];
+      if (values[j] < lo) lo = values[j];
+    }
+    k.push(hi === lo ? 50 : ((values[i] - lo) / (hi - lo)) * 100);
+  }
+  const d: (number | null)[] = k.map((_, i) => {
+    if (i < period - 1 + dPeriod - 1) return null;
+    let s = 0;
+    for (let j = i - dPeriod + 1; j <= i; j++) s += k[j] as number;
+    return s / dPeriod;
+  });
+  return { k, d };
+}
+
 export const analyzeAsset = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => InputSchema.parse(d))
   .handler(async ({ data }) => {
@@ -204,6 +246,8 @@ export const analyzeAsset = createServerFn({ method: "POST" })
     const sma50 = sma(closes, 50);
     const rsiArr = rsi(closes, 14);
     const macdRes = macd(closes);
+    const bb = bollinger(closes, 20, 2);
+    const stoch = stochastic(closes, 14, 3);
 
     const last = closes.length - 1;
     const price = closes[last];
@@ -220,6 +264,11 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       macd: macdRes.line[last],
       macdSignal: macdRes.signal[last],
       macdHist: macdRes.hist[last],
+      bbUpper: bb.upper[last],
+      bbLower: bb.lower[last],
+      stochK: stoch.k[last],
+      stochD: stoch.d[last],
+      volume: candles[last].volume ?? null,
       weekChangePct: ((price - weekAgo) / weekAgo) * 100,
       monthChangePct: ((price - monthAgo) / monthAgo) * 100,
     };
@@ -338,8 +387,21 @@ Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidenc
         close: c.close,
         sma20: sma20[idx],
         sma50: sma50[idx],
+        bbUpper: bb.upper[idx],
+        bbLower: bb.lower[idx],
+        volume: c.volume ?? null,
       };
     });
 
-    return { ok: true as const, symbol: data.symbol.toUpperCase(), market: data.market, indicators, ai, chart };
+    const history = candles.slice(-250).map((c) => c.close);
+
+    return {
+      ok: true as const,
+      symbol: data.symbol.toUpperCase(),
+      market: data.market,
+      indicators,
+      ai,
+      chart,
+      history,
+    };
   });
