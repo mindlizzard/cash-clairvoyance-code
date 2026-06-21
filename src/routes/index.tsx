@@ -34,6 +34,7 @@ import {
 import { analyzeAsset } from "@/lib/analyze.functions";
 import { fetchNews } from "@/lib/news.functions";
 import { backtest, type Strategy } from "@/lib/backtest";
+import { logForecasts, scoreOpenForecasts, getModelStats, type ModelStats } from "@/lib/accuracy";
 import {
   store,
   useStore,
@@ -124,6 +125,22 @@ function Home() {
       if (hit && !a.triggeredAt) store.markTriggered(a.id);
     }
   }, [result, storeData.alerts]);
+
+  // Accuracy tracking: score oude voorspellingen tegen huidige prijs, log nieuwe
+  useEffect(() => {
+    if (!result) return;
+    scoreOpenForecasts({
+      symbol: result.symbol,
+      market: result.market,
+      currentPrice: result.indicators.price,
+    });
+    logForecasts({
+      symbol: result.symbol,
+      market: result.market,
+      price: result.indicators.price,
+      forecasts: result.ai.forecasts,
+    });
+  }, [result?.symbol, result?.market]);
 
   const submit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -467,16 +484,29 @@ function AnalysePanel({
             />
           </div>
         </div>
-        <ForecastTable forecasts={result.ai.forecasts} amount={Number(amount) || 0} />
+        <ForecastTable
+          forecasts={result.ai.forecasts}
+          amount={Number(amount) || 0}
+          accuracy={getModelStats(result.symbol, result.market)}
+        />
         {result.stats && (
-          <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-4">
+          <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-5">
             <div><span className="text-foreground font-medium">{result.stats.samples}</span> dagen historie</div>
             <div>Drift: <span className="text-foreground font-medium">{result.stats.driftPct.toFixed(3)}%/d</span></div>
             <div>Volatiliteit: <span className="text-foreground font-medium">{result.stats.annualVolPct.toFixed(1)}%/j</span></div>
             <div>Regressietrend 90d: <span className="text-foreground font-medium">{result.stats.slopePctPerDay.toFixed(3)}%/d</span></div>
+            <div>Regime: <span className="text-foreground font-medium capitalize">{result.stats.regime}</span></div>
           </div>
         )}
       </Card>
+
+      {result.monteCarlo && (
+        <MonteCarloPanel mc={result.monteCarlo} price={result.indicators.price} amount={Number(amount) || 0} />
+      )}
+
+      {(result.macro || result.earnings || result.fearGreed) && (
+        <ContextPanel macro={result.macro} earnings={result.earnings} fearGreed={result.fearGreed} />
+      )}
 
       <EntryTiming indicators={result.indicators} />
     </div>
@@ -1156,6 +1186,7 @@ function EntryTiming({
 function ForecastTable({
   forecasts,
   amount,
+  accuracy,
 }: {
   forecasts: {
     model: string;
@@ -1167,6 +1198,7 @@ function ForecastTable({
     bandMonth?: number;
   }[];
   amount: number;
+  accuracy?: ModelStats[];
 }) {
   const avg = (key: "day" | "week" | "month") =>
     forecasts.length ? forecasts.reduce((s, f) => s + f[key], 0) / forecasts.length : 0;
@@ -1177,6 +1209,7 @@ function ForecastTable({
     n.toLocaleString("nl-NL", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
   const toneCls = (n: number) =>
     n > 0 ? "text-accent" : n < 0 ? "text-destructive" : "text-muted-foreground";
+  const accMap = new Map((accuracy ?? []).map((a) => [a.model, a]));
 
   return (
     <div className="overflow-x-auto">
@@ -1191,9 +1224,18 @@ function ForecastTable({
           </tr>
         </thead>
         <tbody>
-          {forecasts.map((f) => (
+          {forecasts.map((f) => {
+            const a = accMap.get(f.model);
+            return (
             <tr key={f.model} className="border-b border-border/40 last:border-0">
-              <td className="py-2 pr-3 font-medium">{f.model}</td>
+              <td className="py-2 pr-3 font-medium">
+                <div>{f.model}</div>
+                {a && (
+                  <div className="text-[10px] text-muted-foreground">
+                    {a.samples}x · hit {a.hitRate.toFixed(0)}% · MAE {a.mae.toFixed(1)}%
+                  </div>
+                )}
+              </td>
               <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.day)}`}>{fmtPct(f.day)}<span className="text-[10px] text-muted-foreground">{fmtBand(f.bandDay)}</span></td>
               <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.week)}`}>{fmtPct(f.week)}<span className="text-[10px] text-muted-foreground">{fmtBand(f.bandWeek)}</span></td>
               <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.month)}`}>{fmtPct(f.month)}<span className="text-[10px] text-muted-foreground">{fmtBand(f.bandMonth)}</span></td>
@@ -1206,7 +1248,8 @@ function ForecastTable({
                 )}
               </td>
             </tr>
-          ))}
+            );
+          })}
           <tr className="bg-secondary/40 font-semibold">
             <td className="py-2 pr-3">Gemiddeld</td>
             <td className={`py-2 px-3 text-right tabular-nums ${toneCls(avg("day"))}`}>{fmtPct(avg("day"))}</td>
@@ -1217,5 +1260,147 @@ function ForecastTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+/* ---------------- Monte Carlo panel ---------------- */
+
+function MonteCarloPanel({
+  mc,
+  price,
+  amount,
+}: {
+  mc: AnalyzeResult["monteCarlo"];
+  price: number;
+  amount: number;
+}) {
+  if (!mc) return null;
+  const horizons: {
+    name: string;
+    sub: string;
+    h: NonNullable<AnalyzeResult["monteCarlo"]>["base"]["day"];
+  }[] = [
+    { name: "1 dag", sub: "morgen", h: mc.base.day },
+    { name: "1 week", sub: "5 handelsdagen", h: mc.base.week },
+    { name: "1 maand", sub: "21 handelsdagen", h: mc.base.month },
+  ];
+
+  const fmtEur = (n: number) =>
+    (amount * (1 + n / 100)).toLocaleString("nl-NL", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+
+  return (
+    <Card className="border-border/60 bg-card p-5">
+      <div className="mb-4">
+        <h4 className="text-lg font-semibold">Kansverdeling (Monte Carlo)</h4>
+        <p className="text-xs text-muted-foreground">
+          1.000 gesimuleerde scenario's per horizon. Toont mediaan, P10–P90 spreiding en kans op winst.
+        </p>
+      </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        {horizons.map((row) => {
+          const h = row.h;
+          const range = Math.max(Math.abs(h.p10), Math.abs(h.p90), 5);
+          const pct = (v: number) => 50 + (v / range) * 50;
+          return (
+            <div key={row.name} className="rounded-lg border border-border/60 bg-background/40 p-4">
+              <div className="mb-2 flex items-baseline justify-between">
+                <div>
+                  <div className="font-semibold">{row.name}</div>
+                  <div className="text-[10px] uppercase text-muted-foreground">{row.sub}</div>
+                </div>
+                <div className={`text-lg font-bold tabular-nums ${h.median >= 0 ? "text-accent" : "text-destructive"}`}>
+                  {h.median >= 0 ? "+" : ""}{h.median.toFixed(2)}%
+                </div>
+              </div>
+              <div className="relative mb-2 h-2 w-full rounded-full bg-secondary">
+                <div
+                  className="absolute top-0 h-2 rounded-full bg-primary/40"
+                  style={{ left: `${pct(h.p10)}%`, width: `${pct(h.p90) - pct(h.p10)}%` }}
+                />
+                <div
+                  className="absolute top-0 h-2 rounded-full bg-primary"
+                  style={{ left: `${pct(h.p25)}%`, width: `${pct(h.p75) - pct(h.p25)}%` }}
+                />
+                <div
+                  className="absolute top-[-2px] h-3 w-0.5 bg-foreground"
+                  style={{ left: `${pct(0)}%` }}
+                />
+              </div>
+              <div className="mb-2 flex justify-between text-[10px] tabular-nums text-muted-foreground">
+                <span>{h.p10.toFixed(1)}%</span>
+                <span>0%</span>
+                <span>+{h.p90.toFixed(1)}%</span>
+              </div>
+              <div className="space-y-1 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Kans op winst</span>
+                  <span className={`font-semibold ${h.probUp >= 50 ? "text-accent" : "text-destructive"}`}>
+                    {h.probUp.toFixed(0)}%
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Kans &gt; +5%</span>
+                  <span className="tabular-nums">{h.probGt5.toFixed(0)}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Kans &lt; −5%</span>
+                  <span className="tabular-nums">{h.probLtNeg5.toFixed(0)}%</span>
+                </div>
+                {amount > 0 && (
+                  <div className="mt-2 border-t border-border/40 pt-2 text-[11px] text-muted-foreground">
+                    Inleg waarschijnlijk:&nbsp;
+                    <span className="text-foreground">{fmtEur(h.p25)} – {fmtEur(h.p75)}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-3 text-[10px] text-muted-foreground">
+        Donkere balk = 50% kans (P25–P75). Lichte balk = 80% kans (P10–P90). Verticale streep = huidige prijs ({price.toFixed(2)}).
+      </p>
+    </Card>
+  );
+}
+
+/* ---------------- Context panel (macro + earnings + F&G) ---------------- */
+
+function ContextPanel({
+  macro,
+  earnings,
+  fearGreed,
+}: {
+  macro: AnalyzeResult["macro"];
+  earnings: AnalyzeResult["earnings"];
+  fearGreed: AnalyzeResult["fearGreed"];
+}) {
+  return (
+    <Card className="border-border/60 bg-card p-5">
+      <h4 className="mb-3 text-lg font-semibold">Marktcontext</h4>
+      {earnings && earnings.inDays >= 0 && earnings.inDays <= 7 && (
+        <div className="mb-3 inline-flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-1.5 text-xs text-warning">
+          <AlertTriangle className="h-3.5 w-3.5" />
+          Earnings over {earnings.inDays} {earnings.inDays === 1 ? "dag" : "dagen"} — verhoogde volatiliteit.
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+        {macro?.vix != null && <Stat label="VIX" value={macro.vix.toFixed(1)} hint={macro.vix > 25 ? "Angst" : macro.vix < 15 ? "Kalm" : "Normaal"} />}
+        {macro?.dxy != null && <Stat label="DXY" value={macro.dxy.toFixed(2)} hint="USD index" />}
+        {macro?.tnx != null && <Stat label="10Y rente" value={`${macro.tnx.toFixed(2)}%`} hint="US treasury" />}
+        {macro?.spxChangePct != null && (
+          <Stat label="S&P500" value={`${macro.spxChangePct >= 0 ? "+" : ""}${macro.spxChangePct.toFixed(2)}%`} tone={macro.spxChangePct >= 0 ? "up" : "down"} hint="vorige dag" />
+        )}
+        {macro?.btcChangePct != null && (
+          <Stat label="BTC" value={`${macro.btcChangePct >= 0 ? "+" : ""}${macro.btcChangePct.toFixed(2)}%`} tone={macro.btcChangePct >= 0 ? "up" : "down"} hint="vorige dag" />
+        )}
+        {fearGreed && (
+          <Stat label="Fear & Greed" value={String(fearGreed.value)} hint={fearGreed.label} />
+        )}
+        {earnings && earnings.inDays != null && earnings.inDays > 7 && (
+          <Stat label="Earnings" value={`${earnings.inDays}d`} hint={earnings.date?.slice(0, 10) ?? ""} />
+        )}
+      </div>
+    </Card>
   );
 }

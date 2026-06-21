@@ -1,12 +1,20 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { simulateAllHorizons } from "./montecarlo";
 
 const InputSchema = z.object({
   symbol: z.string().min(1).max(40),
   market: z.enum(["stock", "crypto"]),
 });
 
-type Candle = { date: string; close: number; volume?: number };
+type Candle = {
+  date: string;
+  open?: number;
+  high?: number;
+  low?: number;
+  close: number;
+  volume?: number;
+};
 
 function dataError(symbol: string, market: "stock" | "crypto", message?: string) {
   return {
@@ -24,17 +32,24 @@ function dataError(symbol: string, market: "stock" | "crypto", message?: string)
 
 function parseYahooCandles(result: any): Candle[] {
   const timestamps: number[] = result?.timestamp ?? [];
-  const closes: (number | null)[] = result?.indicators?.quote?.[0]?.close ?? [];
-  const volumes: (number | null)[] = result?.indicators?.quote?.[0]?.volume ?? [];
+  const q = result?.indicators?.quote?.[0] ?? {};
+  const closes: (number | null)[] = q.close ?? [];
+  const opens: (number | null)[] = q.open ?? [];
+  const highs: (number | null)[] = q.high ?? [];
+  const lows: (number | null)[] = q.low ?? [];
+  const volumes: (number | null)[] = q.volume ?? [];
   const rows: Candle[] = [];
   for (let i = 0; i < timestamps.length; i++) {
     const c = closes[i];
     if (typeof c === "number" && !isNaN(c)) {
-      const v = volumes[i];
+      const num = (x: any) => (typeof x === "number" && !isNaN(x) ? x : undefined);
       rows.push({
         date: new Date(timestamps[i] * 1000).toISOString().slice(0, 10),
+        open: num(opens[i]),
+        high: num(highs[i]),
+        low: num(lows[i]),
         close: c,
-        volume: typeof v === "number" && !isNaN(v) ? v : undefined,
+        volume: num(volumes[i]),
       });
     }
   }
@@ -257,6 +272,152 @@ function linRegSlope(values: number[]): number {
   return den === 0 ? 0 : num / den;
 }
 
+/** Average True Range (gemiddelde 14-daagse echte range). */
+function atr(candles: Candle[], period = 14): number {
+  if (candles.length < period + 1) return 0;
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i];
+    const prev = candles[i - 1];
+    const hi = c.high ?? c.close;
+    const lo = c.low ?? c.close;
+    const tr = Math.max(hi - lo, Math.abs(hi - prev.close), Math.abs(lo - prev.close));
+    trs.push(tr);
+  }
+  const last = trs.slice(-period);
+  return last.reduce((s, x) => s + x, 0) / last.length;
+}
+
+/** On-Balance Volume — laatste waarde. */
+function obvLast(candles: Candle[]): number | null {
+  let v = 0;
+  let any = false;
+  for (let i = 1; i < candles.length; i++) {
+    const vol = candles[i].volume;
+    if (vol == null) continue;
+    any = true;
+    if (candles[i].close > candles[i - 1].close) v += vol;
+    else if (candles[i].close < candles[i - 1].close) v -= vol;
+  }
+  return any ? v : null;
+}
+
+/** VWAP over de laatste `period` dagen (typical price * volume / sum volume). */
+function vwap(candles: Candle[], period = 20): number | null {
+  const last = candles.slice(-period);
+  let num = 0, den = 0;
+  for (const c of last) {
+    if (c.volume == null) continue;
+    const tp = ((c.high ?? c.close) + (c.low ?? c.close) + c.close) / 3;
+    num += tp * c.volume;
+    den += c.volume;
+  }
+  return den > 0 ? num / den : null;
+}
+
+/**
+ * EWMA volatiliteit (RiskMetrics, lambda=0.94) — vangt vol-clustering op
+ * zonder volledige GARCH. Geeft dag-sigma.
+ */
+function ewmaVol(returns: number[], lambda = 0.94): number {
+  if (returns.length < 5) return stdev(returns);
+  let v = returns[0] * returns[0];
+  for (let i = 1; i < returns.length; i++) {
+    v = lambda * v + (1 - lambda) * returns[i] * returns[i];
+  }
+  return Math.sqrt(v);
+}
+
+type Regime = "bull" | "bear" | "sideways";
+
+function detectRegime(closes: number[], atrPct: number): Regime {
+  if (closes.length < 200) return "sideways";
+  const last200 = closes.slice(-200);
+  const slope = linRegSlope(last200) / closes[closes.length - 1] * 100; // %/dag
+  if (slope > 0.05 && atrPct < 4) return "bull";
+  if (slope < -0.05) return "bear";
+  return "sideways";
+}
+
+/** Fetch macro context (VIX, DXY, 10Y rente, SPX, BTC) in parallel. */
+async function fetchMacro(): Promise<{
+  vix: number | null;
+  dxy: number | null;
+  tnx: number | null;
+  spxChangePct: number | null;
+  btcChangePct: number | null;
+}> {
+  const fetchLast = async (sym: string): Promise<{ price: number; prev: number } | null> => {
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=5d&interval=1d`;
+      const r = await fetch(url, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        },
+      });
+      if (!r.ok) return null;
+      const j: any = await r.json();
+      const closes: number[] = (j?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? []).filter(
+        (x: any) => typeof x === "number",
+      );
+      if (closes.length < 2) return null;
+      return { price: closes[closes.length - 1], prev: closes[closes.length - 2] };
+    } catch {
+      return null;
+    }
+  };
+  const [vix, dxy, tnx, spx, btc] = await Promise.all([
+    fetchLast("^VIX"),
+    fetchLast("DX-Y.NYB"),
+    fetchLast("^TNX"),
+    fetchLast("^GSPC"),
+    fetchLast("BTC-USD"),
+  ]);
+  return {
+    vix: vix?.price ?? null,
+    dxy: dxy?.price ?? null,
+    tnx: tnx?.price ?? null,
+    spxChangePct: spx ? ((spx.price - spx.prev) / spx.prev) * 100 : null,
+    btcChangePct: btc ? ((btc.price - btc.prev) / btc.prev) * 100 : null,
+  };
+}
+
+/** Probeer earnings datum op te halen via Yahoo quoteSummary. */
+async function fetchEarningsDate(symbol: string): Promise<string | null> {
+  try {
+    const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=calendarEvents`;
+    const r = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+      },
+    });
+    if (!r.ok) return null;
+    const j: any = await r.json();
+    const ev = j?.quoteSummary?.result?.[0]?.calendarEvents?.earnings?.earningsDate?.[0];
+    const raw = ev?.raw;
+    if (!raw) return null;
+    return new Date(raw * 1000).toISOString();
+  } catch {
+    return null;
+  }
+}
+
+/** Fear & Greed (crypto, alternative.me free). */
+async function fetchCryptoFearGreed(): Promise<{ value: number; label: string } | null> {
+  try {
+    const r = await fetch("https://api.alternative.me/fng/?limit=1");
+    if (!r.ok) return null;
+    const j: any = await r.json();
+    const x = j?.data?.[0];
+    if (!x) return null;
+    return { value: Number(x.value), label: String(x.value_classification) };
+  } catch {
+    return null;
+  }
+}
+
 export const analyzeAsset = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => InputSchema.parse(d))
   .handler(async ({ data }) => {
@@ -281,6 +442,9 @@ export const analyzeAsset = createServerFn({ method: "POST" })
     const macdRes = macd(closes);
     const bb = bollinger(closes, 20, 2);
     const stoch = stochastic(closes, 14, 3);
+    const atrVal = atr(candles, 14);
+    const obvVal = obvLast(candles);
+    const vwapVal = vwap(candles, 20);
 
     const last = closes.length - 1;
     const price = closes[last];
@@ -302,6 +466,10 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       stochK: stoch.k[last],
       stochD: stoch.d[last],
       volume: candles[last].volume ?? null,
+      atr: atrVal,
+      atrPct: price > 0 ? (atrVal / price) * 100 : 0,
+      obv: obvVal,
+      vwap: vwapVal,
       weekChangePct: ((price - weekAgo) / weekAgo) * 100,
       monthChangePct: ((price - monthAgo) / monthAgo) * 100,
     };
@@ -310,13 +478,40 @@ export const analyzeAsset = createServerFn({ method: "POST" })
     const rets = logReturns(closes);                       // dagelijkse log returns
     const recent = rets.slice(-252);                       // ~1 handelsjaar
     const drift = mean(recent);                            // dagelijkse drift
-    const vol = stdev(recent);                             // dagelijkse volatiliteit
+    const volSimple = stdev(recent);                       // simpel dagelijkse vol
+    const volEwma = ewmaVol(recent, 0.94);                 // EWMA (vangt clustering)
+    const vol = volEwma || volSimple;                      // gebruik EWMA als hoofd-vol
     const annualVolPct = vol * Math.sqrt(252) * 100;
 
     // Regressie-trend over laatste 90 dagen → %/dag
     const last90 = closes.slice(-90);
     const slope90 = linRegSlope(last90);
     const slopePctPerDay = price > 0 ? (slope90 / price) * 100 : 0;
+
+    // Regime detectie
+    const regime = detectRegime(closes, indicators.atrPct);
+
+    // ---- Macro + earnings + sentiment (parallel) ----
+    const [macro, earningsIso, fng] = await Promise.all([
+      fetchMacro().catch(() => ({
+        vix: null, dxy: null, tnx: null, spxChangePct: null, btcChangePct: null,
+      })),
+      data.market === "stock" ? fetchEarningsDate(data.symbol.trim().toUpperCase().replace(/\./g, "-")) : Promise.resolve(null),
+      data.market === "crypto" ? fetchCryptoFearGreed() : Promise.resolve(null),
+    ]);
+
+    const earningsInDays = (() => {
+      if (!earningsIso) return null;
+      const ms = new Date(earningsIso).getTime() - Date.now();
+      const d = Math.round(ms / 86_400_000);
+      return isFinite(d) ? d : null;
+    })();
+
+    // ---- Monte Carlo per horizon ----
+    const mcBase = simulateAllHorizons(drift, vol, 1000);
+    // Regime-aangepaste MC: in bear regime drift -50%, in bull +20%
+    const regimeMu = regime === "bull" ? drift * 1.2 + 0.0005 : regime === "bear" ? drift * 0.5 - 0.0005 : drift;
+    const mcRegime = simulateAllHorizons(regimeMu, vol, 1000);
 
     // Helper: convert dagelijkse log-return naar geprojecteerde % over N dagen
     const proj = (mu: number, days: number) => (Math.exp(mu * days) - 1) * 100;
@@ -383,11 +578,42 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       mkForecast("Momentum (5d EMA)", momentumDriftDay),
       mkForecast("Mean Reversion (RSI)", rsiDriftDay),
       mkForecast("Historische drift (1j)", histDriftDay),
+      {
+        model: "Monte Carlo (1000 sim)",
+        day: +mcBase.day.median.toFixed(2),
+        week: +mcBase.week.median.toFixed(2),
+        month: +mcBase.month.median.toFixed(2),
+        bandDay: +((mcBase.day.p75 - mcBase.day.p25) / 2).toFixed(2),
+        bandWeek: +((mcBase.week.p75 - mcBase.week.p25) / 2).toFixed(2),
+        bandMonth: +((mcBase.month.p75 - mcBase.month.p25) / 2).toFixed(2),
+      },
+      {
+        model: `Regime-MC (${regime})`,
+        day: +mcRegime.day.median.toFixed(2),
+        week: +mcRegime.week.median.toFixed(2),
+        month: +mcRegime.month.median.toFixed(2),
+        bandDay: +((mcRegime.day.p75 - mcRegime.day.p25) / 2).toFixed(2),
+        bandWeek: +((mcRegime.week.p75 - mcRegime.week.p25) / 2).toFixed(2),
+        bandMonth: +((mcRegime.month.p75 - mcRegime.month.p25) / 2).toFixed(2),
+      },
     ];
     ai.forecasts = heuristicForecasts;
 
     if (apiKey) {
       const prompt = `Je bent een ervaren technisch analist. Geef een nuchtere analyse voor ${data.symbol} (${data.market === "stock" ? "aandeel/ETF" : "crypto"}).
+
+Volg deze redeneerstappen INTERN (niet uitschrijven):
+1. Beoordeel trend (SMA20 vs SMA50, regressieslope, regime).
+2. Beoordeel momentum (MACD-hist, RSI, Stochastic).
+3. Beoordeel volatiliteit & risico (ATR%, EWMA-vol, Bollinger-positie).
+4. Beoordeel macro context (VIX, DXY, 10Y, SPX). Hoge VIX of stijgende 10Y → meer voorzichtig.
+5. ${data.market === "stock" ? "Check earnings — vlak vóór earnings is volatiliteit hoog." : "Check crypto Fear & Greed — extreme greed → mean-reversion risico."}
+6. Combineer tot signal + verwachting met realistische onzekerheidsband.
+
+Voorbeelden (few-shot, ter referentie van toon en cijfers):
+- AAPL met RSI 72, SMA20>SMA50, VIX 13: signal HOLD, conf 55, week +1.2% ±3%, month +2.5% ±6%.
+- TSLA met RSI 28, MACD bullish-cross, VIX 22: signal BUY, conf 65, week +4% ±7%, month +9% ±15%.
+- NVDA met RSI 80, bearish MACD-hist, VIX 18: signal SELL/HOLD, conf 60, week -2% ±5%, month -4% ±12%.
 
 Huidige indicatoren:
 - Prijs: ${price.toFixed(4)}
@@ -398,27 +624,38 @@ Huidige indicatoren:
 - MACD: ${indicators.macd?.toFixed(4)} signaal: ${indicators.macdSignal?.toFixed(4)} hist: ${indicators.macdHist?.toFixed(4)}
 - Stochastic %K: ${indicators.stochK?.toFixed(1)}, %D: ${indicators.stochD?.toFixed(1)}
 - Bollinger upper: ${indicators.bbUpper?.toFixed(4)}, lower: ${indicators.bbLower?.toFixed(4)}
+- ATR(14): ${atrVal.toFixed(4)} (${indicators.atrPct.toFixed(2)}% van prijs)
+- VWAP(20): ${vwapVal?.toFixed(4) ?? "n/a"}
+- Regime: ${regime}
 
 Statistiek over ${rets.length} dagen:
 - Gem. dagrendement (drift): ${(drift * 100).toFixed(3)}%
-- Dagelijkse volatiliteit: ${(vol * 100).toFixed(2)}%
+- Dagelijkse volatiliteit (EWMA): ${(vol * 100).toFixed(2)}%
 - Geannualiseerde volatiliteit: ${annualVolPct.toFixed(1)}%
 - Regressie-trend laatste 90d: ${slopePctPerDay.toFixed(3)}%/dag
+
+Macro context:
+- VIX: ${macro.vix?.toFixed(2) ?? "n/a"}, DXY: ${macro.dxy?.toFixed(2) ?? "n/a"}, 10Y rente: ${macro.tnx?.toFixed(2) ?? "n/a"}%
+- S&P500 dag: ${macro.spxChangePct?.toFixed(2) ?? "n/a"}%, BTC dag: ${macro.btcChangePct?.toFixed(2) ?? "n/a"}%
+${earningsInDays != null ? `- Earnings over ${earningsInDays} dagen (${earningsIso?.slice(0, 10)})` : ""}
+${fng ? `- Crypto Fear & Greed: ${fng.value} (${fng.label})` : ""}
+
+Monte Carlo simulatie (1000 paden, basis-drift):
+- 1d: mediaan ${mcBase.day.median.toFixed(2)}%, kans op winst ${mcBase.day.probUp.toFixed(0)}%
+- 5d: mediaan ${mcBase.week.median.toFixed(2)}%, P10-P90 [${mcBase.week.p10.toFixed(1)}, ${mcBase.week.p90.toFixed(1)}], kans op winst ${mcBase.week.probUp.toFixed(0)}%
+- 21d: mediaan ${mcBase.month.median.toFixed(2)}%, P10-P90 [${mcBase.month.p10.toFixed(1)}, ${mcBase.month.p90.toFixed(1)}], kans op winst ${mcBase.month.probUp.toFixed(0)}%
 
 Heuristische modellen (referentie):
 ${heuristicForecasts.map(f => `- ${f.model}: dag ${f.day}%, week ${f.week}%, maand ${f.month}% (±${f.bandMonth}%)`).join("\n")}
 
-Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidence (0-100 getal), shortTerm (verwachting 1-2 weken, 1 zin NL), longTerm (3-6 maanden, 1 zin NL), reasoning (2-3 zinnen NL over de indicatoren én hoe je rekening houdt met volatiliteit), risks (1-2 zinnen NL), aiForecast { day: getal (%), week: getal (%), month: getal (%), bandDay: getal, bandWeek: getal, bandMonth: getal } — realistische rendementsverwachting met 1-sigma onzekerheidsband in procenten.`;
+Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidence (0-100 getal, verlaag bij hoge VIX of earnings binnen 7d), shortTerm (verwachting 1-2 weken, 1 zin NL), longTerm (3-6 maanden, 1 zin NL), reasoning (3-4 zinnen NL: trend, momentum, volatiliteit, macro), risks (1-2 zinnen NL), aiForecast { day: getal (%), week: getal (%), month: getal (%), bandDay: getal, bandWeek: getal, bandMonth: getal } — realistische rendementsverwachting met 1-sigma onzekerheidsband.`;
 
-      try {
+      const callAi = async (model: string) => {
         const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Lovable-API-Key": apiKey,
-          },
+          headers: { "Content-Type": "application/json", "Lovable-API-Key": apiKey },
           body: JSON.stringify({
-            model: "google/gemini-3-flash-preview",
+            model,
             messages: [
               { role: "system", content: "Je bent een Nederlandse technische beursanalist. Antwoord altijd in valide JSON." },
               { role: "user", content: prompt },
@@ -430,23 +667,36 @@ Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidenc
         if (r.status === 402) throw new Error("AI credits op");
         if (!r.ok) throw new Error(`AI fout (${r.status})`);
         const j = await r.json();
-        const content = j.choices?.[0]?.message?.content ?? "{}";
-        const parsed = JSON.parse(content);
+        return JSON.parse(j.choices?.[0]?.message?.content ?? "{}");
+      };
+
+      try {
+        // Parallel: Flash + Pro (ensemble)
+        const [flash, pro] = await Promise.allSettled([
+          callAi("google/gemini-3-flash-preview"),
+          callAi("google/gemini-3.1-pro-preview"),
+        ]);
+        const flashOk = flash.status === "fulfilled" ? flash.value : null;
+        const proOk = pro.status === "fulfilled" ? pro.value : null;
+        const parsed = flashOk ?? proOk ?? {};
         const { aiForecast, ...rest } = parsed ?? {};
         ai = { ...ai, ...rest };
+        const aiList: { model: string; data: any }[] = [];
+        if (flashOk?.aiForecast) aiList.push({ model: "AI Flash", data: flashOk.aiForecast });
+        if (proOk?.aiForecast) aiList.push({ model: "AI Pro", data: proOk.aiForecast });
+        const aiForecasts = aiList.map(({ model, data: a }) => ({
+          model,
+          day: +Number(a.day ?? 0).toFixed(2),
+          week: +Number(a.week ?? 0).toFixed(2),
+          month: +Number(a.month ?? 0).toFixed(2),
+          bandDay: +Number(a.bandDay ?? band(1)).toFixed(2),
+          bandWeek: +Number(a.bandWeek ?? band(5)).toFixed(2),
+          bandMonth: +Number(a.bandMonth ?? band(21)).toFixed(2),
+        }));
         if (aiForecast && typeof aiForecast === "object") {
-          ai.forecasts = [
-            {
-              model: "AI Prognose",
-              day: +Number(aiForecast.day ?? 0).toFixed(2),
-              week: +Number(aiForecast.week ?? 0).toFixed(2),
-              month: +Number(aiForecast.month ?? 0).toFixed(2),
-              bandDay: +Number(aiForecast.bandDay ?? band(1)).toFixed(2),
-              bandWeek: +Number(aiForecast.bandWeek ?? band(5)).toFixed(2),
-              bandMonth: +Number(aiForecast.bandMonth ?? band(21)).toFixed(2),
-            },
-            ...heuristicForecasts,
-          ];
+          ai.forecasts = [...aiForecasts, ...heuristicForecasts];
+        } else if (aiForecasts.length) {
+          ai.forecasts = [...aiForecasts, ...heuristicForecasts];
         }
       } catch (e) {
         ai.reasoning = `AI-prognose niet beschikbaar: ${(e as Error).message}`;
@@ -482,6 +732,23 @@ Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidenc
         dailyVolPct: +(vol * 100).toFixed(3),
         annualVolPct: +annualVolPct.toFixed(2),
         slopePctPerDay: +slopePctPerDay.toFixed(4),
+        regime,
       },
+      monteCarlo: {
+        base: mcBase,
+        regime: mcRegime,
+      },
+      macro: {
+        vix: macro.vix,
+        dxy: macro.dxy,
+        tnx: macro.tnx,
+        spxChangePct: macro.spxChangePct,
+        btcChangePct: macro.btcChangePct,
+      },
+      earnings: earningsInDays != null ? {
+        date: earningsIso,
+        inDays: earningsInDays,
+      } : null,
+      fearGreed: fng,
     };
   });
