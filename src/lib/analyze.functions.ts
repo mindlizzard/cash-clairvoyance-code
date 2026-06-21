@@ -50,7 +50,7 @@ function parseNasdaqPrice(value: unknown): number | null {
 async function fetchNasdaqStock(symbol: string, assetClass: "stocks" | "etf"): Promise<Candle[]> {
   const end = new Date();
   const start = new Date(end);
-  start.setFullYear(start.getFullYear() - 1);
+  start.setFullYear(start.getFullYear() - 5);
   const format = (date: Date) => date.toISOString().slice(0, 10);
   const url = `https://api.nasdaq.com/api/quote/${encodeURIComponent(symbol)}/historical?assetclass=${assetClass}&fromdate=${format(start)}&todate=${format(end)}&limit=9999`;
   const res = await fetch(url, {
@@ -86,7 +86,7 @@ async function fetchStock(symbol: string): Promise<Candle[]> {
   };
   let result: any = null;
   for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
-    const url = `https://${host}/v8/finance/chart/${encodeURIComponent(t)}?range=1y&interval=1d`;
+    const url = `https://${host}/v8/finance/chart/${encodeURIComponent(t)}?range=5y&interval=1d`;
     const res = await fetch(url, { headers });
     if (!res.ok) continue;
     const json: any = await res.json();
@@ -96,7 +96,7 @@ async function fetchStock(symbol: string): Promise<Candle[]> {
 
   let rows = parseYahooCandles(result);
   if (rows.length < 30) {
-    const sparkUrl = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${encodeURIComponent(t)}&range=1y&interval=1d`;
+    const sparkUrl = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${encodeURIComponent(t)}&range=5y&interval=1d`;
     const sparkRes = await fetch(sparkUrl, { headers });
     if (sparkRes.ok) {
       const sparkJson: any = await sparkRes.json();
@@ -120,7 +120,7 @@ async function fetchStock(symbol: string): Promise<Candle[]> {
 async function fetchCrypto(symbol: string): Promise<Candle[]> {
   try {
   const id = symbol.toLowerCase().replace(/\s+/g, "-");
-  const url = `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(id)}/market_chart?vs_currency=eur&days=200&interval=daily`;
+  const url = `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(id)}/market_chart?vs_currency=eur&days=365&interval=daily`;
   const res = await fetch(url);
   if (!res.ok) return [];
   const json = (await res.json()) as { prices: [number, number][] };
@@ -393,7 +393,7 @@ Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidenc
       };
     });
 
-    const history = candles.slice(-250).map((c) => c.close);
+    const history = candles.slice(-1250).map((c) => c.close);
 
     return {
       ok: true as const,
