@@ -224,6 +224,39 @@ function stochastic(values: number[], period = 14, dPeriod = 3) {
   return { k, d };
 }
 
+/** Daily log returns of a series. */
+function logReturns(values: number[]): number[] {
+  const r: number[] = [];
+  for (let i = 1; i < values.length; i++) {
+    if (values[i - 1] > 0 && values[i] > 0) r.push(Math.log(values[i] / values[i - 1]));
+  }
+  return r;
+}
+
+function mean(xs: number[]): number {
+  return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0;
+}
+
+function stdev(xs: number[]): number {
+  if (xs.length < 2) return 0;
+  const m = mean(xs);
+  return Math.sqrt(xs.reduce((s, x) => s + (x - m) ** 2, 0) / (xs.length - 1));
+}
+
+/** Linear regression slope (per index step) of y on its index. */
+function linRegSlope(values: number[]): number {
+  const n = values.length;
+  if (n < 2) return 0;
+  const xMean = (n - 1) / 2;
+  const yMean = mean(values);
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (i - xMean) * (values[i] - yMean);
+    den += (i - xMean) ** 2;
+  }
+  return den === 0 ? 0 : num / den;
+}
+
 export const analyzeAsset = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => InputSchema.parse(d))
   .handler(async ({ data }) => {
@@ -273,6 +306,22 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       monthChangePct: ((price - monthAgo) / monthAgo) * 100,
     };
 
+    // ---- Statistische basis voor voorspellingen ----
+    const rets = logReturns(closes);                       // dagelijkse log returns
+    const recent = rets.slice(-252);                       // ~1 handelsjaar
+    const drift = mean(recent);                            // dagelijkse drift
+    const vol = stdev(recent);                             // dagelijkse volatiliteit
+    const annualVolPct = vol * Math.sqrt(252) * 100;
+
+    // Regressie-trend over laatste 90 dagen → %/dag
+    const last90 = closes.slice(-90);
+    const slope90 = linRegSlope(last90);
+    const slopePctPerDay = price > 0 ? (slope90 / price) * 100 : 0;
+
+    // Helper: convert dagelijkse log-return naar geprojecteerde % over N dagen
+    const proj = (mu: number, days: number) => (Math.exp(mu * days) - 1) * 100;
+    const band = (days: number) => vol * Math.sqrt(days) * 100; // 1-sigma band in %
+
     const apiKey = process.env.LOVABLE_API_KEY;
     let ai: {
       signal: "BUY" | "SELL" | "HOLD";
@@ -286,6 +335,9 @@ export const analyzeAsset = createServerFn({ method: "POST" })
         day: number;
         week: number;
         month: number;
+        bandDay?: number;
+        bandWeek?: number;
+        bandMonth?: number;
       }[];
     } = {
       signal: "HOLD",
@@ -297,33 +349,40 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       forecasts: [],
     };
 
-    // Heuristische voorspellingen (altijd beschikbaar, ook zonder AI)
+    // ---- Heuristische modellen op basis van log-returns + statistiek ----
     const trendPct = (indicators.sma20 && indicators.sma50)
-      ? ((indicators.sma20 - indicators.sma50) / indicators.sma50) * 100
+      ? ((indicators.sma20 - indicators.sma50) / indicators.sma50)
       : 0;
-    const momentum = indicators.weekChangePct;
-    const rsiBias = indicators.rsi != null ? (50 - indicators.rsi) / 10 : 0; // mean reversion
-    const macdBias = (indicators.macdHist ?? 0) > 0 ? 1 : -1;
+    const macdBiasPerDay = (indicators.macdHist ?? 0) > 0
+      ? Math.min(0.002, vol * 0.3)
+      : -Math.min(0.002, vol * 0.3);
+    // RSI mean-reversion drift: kracht ~ afstand van 50, met dempfactor
+    const rsiDriftDay = indicators.rsi != null
+      ? ((50 - indicators.rsi) / 50) * vol * 0.4
+      : 0;
+    // Historische gemiddelde drift (annual return)
+    const histDriftDay = drift;
+    // Trend-volger: combineert SMA-spread + regressieslope
+    const trendDriftDay = (trendPct / 60) + (slopePctPerDay / 100) * 0.6 + macdBiasPerDay;
+    // Momentum: recente 5d gem return blijft (met decay)
+    const recent5 = rets.slice(-5);
+    const momentumDriftDay = mean(recent5) * 0.5;
+
+    const mkForecast = (model: string, mu: number) => ({
+      model,
+      day: +proj(mu, 1).toFixed(2),
+      week: +proj(mu, 5).toFixed(2),
+      month: +proj(mu, 21).toFixed(2),
+      bandDay: +band(1).toFixed(2),
+      bandWeek: +band(5).toFixed(2),
+      bandMonth: +band(21).toFixed(2),
+    });
 
     const heuristicForecasts = [
-      {
-        model: "Trendvolger (SMA)",
-        day: +(trendPct * 0.05 + macdBias * 0.1).toFixed(2),
-        week: +(trendPct * 0.25 + macdBias * 0.4).toFixed(2),
-        month: +(trendPct * 0.8 + macdBias * 1.2).toFixed(2),
-      },
-      {
-        model: "Momentum",
-        day: +(momentum * 0.05).toFixed(2),
-        week: +(momentum * 0.35).toFixed(2),
-        month: +(momentum * 1.1 + indicators.monthChangePct * 0.3).toFixed(2),
-      },
-      {
-        model: "Mean Reversion (RSI)",
-        day: +(rsiBias * 0.15).toFixed(2),
-        week: +(rsiBias * 0.6).toFixed(2),
-        month: +(rsiBias * 1.5).toFixed(2),
-      },
+      mkForecast("Trendvolger (SMA+regressie)", trendDriftDay),
+      mkForecast("Momentum (5d EMA)", momentumDriftDay),
+      mkForecast("Mean Reversion (RSI)", rsiDriftDay),
+      mkForecast("Historische drift (1j)", histDriftDay),
     ];
     ai.forecasts = heuristicForecasts;
 
@@ -337,8 +396,19 @@ Huidige indicatoren:
 - SMA20: ${indicators.sma20?.toFixed(4)}, SMA50: ${indicators.sma50?.toFixed(4)}
 - RSI(14): ${indicators.rsi?.toFixed(1)}
 - MACD: ${indicators.macd?.toFixed(4)} signaal: ${indicators.macdSignal?.toFixed(4)} hist: ${indicators.macdHist?.toFixed(4)}
+- Stochastic %K: ${indicators.stochK?.toFixed(1)}, %D: ${indicators.stochD?.toFixed(1)}
+- Bollinger upper: ${indicators.bbUpper?.toFixed(4)}, lower: ${indicators.bbLower?.toFixed(4)}
 
-Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidence (0-100 getal), shortTerm (verwachting 1-2 weken, 1 zin NL), longTerm (3-6 maanden, 1 zin NL), reasoning (2-3 zinnen NL over de indicatoren), risks (1-2 zinnen NL), aiForecast { day: getal (%), week: getal (%), month: getal (%) } — realistische procentuele rendementsverwachting.`;
+Statistiek over ${rets.length} dagen:
+- Gem. dagrendement (drift): ${(drift * 100).toFixed(3)}%
+- Dagelijkse volatiliteit: ${(vol * 100).toFixed(2)}%
+- Geannualiseerde volatiliteit: ${annualVolPct.toFixed(1)}%
+- Regressie-trend laatste 90d: ${slopePctPerDay.toFixed(3)}%/dag
+
+Heuristische modellen (referentie):
+${heuristicForecasts.map(f => `- ${f.model}: dag ${f.day}%, week ${f.week}%, maand ${f.month}% (±${f.bandMonth}%)`).join("\n")}
+
+Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidence (0-100 getal), shortTerm (verwachting 1-2 weken, 1 zin NL), longTerm (3-6 maanden, 1 zin NL), reasoning (2-3 zinnen NL over de indicatoren én hoe je rekening houdt met volatiliteit), risks (1-2 zinnen NL), aiForecast { day: getal (%), week: getal (%), month: getal (%), bandDay: getal, bandWeek: getal, bandMonth: getal } — realistische rendementsverwachting met 1-sigma onzekerheidsband in procenten.`;
 
       try {
         const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -371,6 +441,9 @@ Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidenc
               day: +Number(aiForecast.day ?? 0).toFixed(2),
               week: +Number(aiForecast.week ?? 0).toFixed(2),
               month: +Number(aiForecast.month ?? 0).toFixed(2),
+              bandDay: +Number(aiForecast.bandDay ?? band(1)).toFixed(2),
+              bandWeek: +Number(aiForecast.bandWeek ?? band(5)).toFixed(2),
+              bandMonth: +Number(aiForecast.bandMonth ?? band(21)).toFixed(2),
             },
             ...heuristicForecasts,
           ];
