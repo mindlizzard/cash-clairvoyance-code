@@ -578,11 +578,42 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       mkForecast("Momentum (5d EMA)", momentumDriftDay),
       mkForecast("Mean Reversion (RSI)", rsiDriftDay),
       mkForecast("Historische drift (1j)", histDriftDay),
+      {
+        model: "Monte Carlo (1000 sim)",
+        day: +mcBase.day.median.toFixed(2),
+        week: +mcBase.week.median.toFixed(2),
+        month: +mcBase.month.median.toFixed(2),
+        bandDay: +((mcBase.day.p75 - mcBase.day.p25) / 2).toFixed(2),
+        bandWeek: +((mcBase.week.p75 - mcBase.week.p25) / 2).toFixed(2),
+        bandMonth: +((mcBase.month.p75 - mcBase.month.p25) / 2).toFixed(2),
+      },
+      {
+        model: `Regime-MC (${regime})`,
+        day: +mcRegime.day.median.toFixed(2),
+        week: +mcRegime.week.median.toFixed(2),
+        month: +mcRegime.month.median.toFixed(2),
+        bandDay: +((mcRegime.day.p75 - mcRegime.day.p25) / 2).toFixed(2),
+        bandWeek: +((mcRegime.week.p75 - mcRegime.week.p25) / 2).toFixed(2),
+        bandMonth: +((mcRegime.month.p75 - mcRegime.month.p25) / 2).toFixed(2),
+      },
     ];
     ai.forecasts = heuristicForecasts;
 
     if (apiKey) {
       const prompt = `Je bent een ervaren technisch analist. Geef een nuchtere analyse voor ${data.symbol} (${data.market === "stock" ? "aandeel/ETF" : "crypto"}).
+
+Volg deze redeneerstappen INTERN (niet uitschrijven):
+1. Beoordeel trend (SMA20 vs SMA50, regressieslope, regime).
+2. Beoordeel momentum (MACD-hist, RSI, Stochastic).
+3. Beoordeel volatiliteit & risico (ATR%, EWMA-vol, Bollinger-positie).
+4. Beoordeel macro context (VIX, DXY, 10Y, SPX). Hoge VIX of stijgende 10Y → meer voorzichtig.
+5. ${data.market === "stock" ? "Check earnings — vlak vóór earnings is volatiliteit hoog." : "Check crypto Fear & Greed — extreme greed → mean-reversion risico."}
+6. Combineer tot signal + verwachting met realistische onzekerheidsband.
+
+Voorbeelden (few-shot, ter referentie van toon en cijfers):
+- AAPL met RSI 72, SMA20>SMA50, VIX 13: signal HOLD, conf 55, week +1.2% ±3%, month +2.5% ±6%.
+- TSLA met RSI 28, MACD bullish-cross, VIX 22: signal BUY, conf 65, week +4% ±7%, month +9% ±15%.
+- NVDA met RSI 80, bearish MACD-hist, VIX 18: signal SELL/HOLD, conf 60, week -2% ±5%, month -4% ±12%.
 
 Huidige indicatoren:
 - Prijs: ${price.toFixed(4)}
@@ -593,27 +624,38 @@ Huidige indicatoren:
 - MACD: ${indicators.macd?.toFixed(4)} signaal: ${indicators.macdSignal?.toFixed(4)} hist: ${indicators.macdHist?.toFixed(4)}
 - Stochastic %K: ${indicators.stochK?.toFixed(1)}, %D: ${indicators.stochD?.toFixed(1)}
 - Bollinger upper: ${indicators.bbUpper?.toFixed(4)}, lower: ${indicators.bbLower?.toFixed(4)}
+- ATR(14): ${atrVal.toFixed(4)} (${indicators.atrPct.toFixed(2)}% van prijs)
+- VWAP(20): ${vwapVal?.toFixed(4) ?? "n/a"}
+- Regime: ${regime}
 
 Statistiek over ${rets.length} dagen:
 - Gem. dagrendement (drift): ${(drift * 100).toFixed(3)}%
-- Dagelijkse volatiliteit: ${(vol * 100).toFixed(2)}%
+- Dagelijkse volatiliteit (EWMA): ${(vol * 100).toFixed(2)}%
 - Geannualiseerde volatiliteit: ${annualVolPct.toFixed(1)}%
 - Regressie-trend laatste 90d: ${slopePctPerDay.toFixed(3)}%/dag
+
+Macro context:
+- VIX: ${macro.vix?.toFixed(2) ?? "n/a"}, DXY: ${macro.dxy?.toFixed(2) ?? "n/a"}, 10Y rente: ${macro.tnx?.toFixed(2) ?? "n/a"}%
+- S&P500 dag: ${macro.spxChangePct?.toFixed(2) ?? "n/a"}%, BTC dag: ${macro.btcChangePct?.toFixed(2) ?? "n/a"}%
+${earningsInDays != null ? `- Earnings over ${earningsInDays} dagen (${earningsIso?.slice(0, 10)})` : ""}
+${fng ? `- Crypto Fear & Greed: ${fng.value} (${fng.label})` : ""}
+
+Monte Carlo simulatie (1000 paden, basis-drift):
+- 1d: mediaan ${mcBase.day.median.toFixed(2)}%, kans op winst ${mcBase.day.probUp.toFixed(0)}%
+- 5d: mediaan ${mcBase.week.median.toFixed(2)}%, P10-P90 [${mcBase.week.p10.toFixed(1)}, ${mcBase.week.p90.toFixed(1)}], kans op winst ${mcBase.week.probUp.toFixed(0)}%
+- 21d: mediaan ${mcBase.month.median.toFixed(2)}%, P10-P90 [${mcBase.month.p10.toFixed(1)}, ${mcBase.month.p90.toFixed(1)}], kans op winst ${mcBase.month.probUp.toFixed(0)}%
 
 Heuristische modellen (referentie):
 ${heuristicForecasts.map(f => `- ${f.model}: dag ${f.day}%, week ${f.week}%, maand ${f.month}% (±${f.bandMonth}%)`).join("\n")}
 
-Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidence (0-100 getal), shortTerm (verwachting 1-2 weken, 1 zin NL), longTerm (3-6 maanden, 1 zin NL), reasoning (2-3 zinnen NL over de indicatoren én hoe je rekening houdt met volatiliteit), risks (1-2 zinnen NL), aiForecast { day: getal (%), week: getal (%), month: getal (%), bandDay: getal, bandWeek: getal, bandMonth: getal } — realistische rendementsverwachting met 1-sigma onzekerheidsband in procenten.`;
+Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidence (0-100 getal, verlaag bij hoge VIX of earnings binnen 7d), shortTerm (verwachting 1-2 weken, 1 zin NL), longTerm (3-6 maanden, 1 zin NL), reasoning (3-4 zinnen NL: trend, momentum, volatiliteit, macro), risks (1-2 zinnen NL), aiForecast { day: getal (%), week: getal (%), month: getal (%), bandDay: getal, bandWeek: getal, bandMonth: getal } — realistische rendementsverwachting met 1-sigma onzekerheidsband.`;
 
-      try {
+      const callAi = async (model: string) => {
         const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Lovable-API-Key": apiKey,
-          },
+          headers: { "Content-Type": "application/json", "Lovable-API-Key": apiKey },
           body: JSON.stringify({
-            model: "google/gemini-3-flash-preview",
+            model,
             messages: [
               { role: "system", content: "Je bent een Nederlandse technische beursanalist. Antwoord altijd in valide JSON." },
               { role: "user", content: prompt },
@@ -625,23 +667,36 @@ Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidenc
         if (r.status === 402) throw new Error("AI credits op");
         if (!r.ok) throw new Error(`AI fout (${r.status})`);
         const j = await r.json();
-        const content = j.choices?.[0]?.message?.content ?? "{}";
-        const parsed = JSON.parse(content);
+        return JSON.parse(j.choices?.[0]?.message?.content ?? "{}");
+      };
+
+      try {
+        // Parallel: Flash + Pro (ensemble)
+        const [flash, pro] = await Promise.allSettled([
+          callAi("google/gemini-3-flash-preview"),
+          callAi("google/gemini-3.1-pro-preview"),
+        ]);
+        const flashOk = flash.status === "fulfilled" ? flash.value : null;
+        const proOk = pro.status === "fulfilled" ? pro.value : null;
+        const parsed = flashOk ?? proOk ?? {};
         const { aiForecast, ...rest } = parsed ?? {};
         ai = { ...ai, ...rest };
+        const aiList: { model: string; data: any }[] = [];
+        if (flashOk?.aiForecast) aiList.push({ model: "AI Flash", data: flashOk.aiForecast });
+        if (proOk?.aiForecast) aiList.push({ model: "AI Pro", data: proOk.aiForecast });
+        const aiForecasts = aiList.map(({ model, data: a }) => ({
+          model,
+          day: +Number(a.day ?? 0).toFixed(2),
+          week: +Number(a.week ?? 0).toFixed(2),
+          month: +Number(a.month ?? 0).toFixed(2),
+          bandDay: +Number(a.bandDay ?? band(1)).toFixed(2),
+          bandWeek: +Number(a.bandWeek ?? band(5)).toFixed(2),
+          bandMonth: +Number(a.bandMonth ?? band(21)).toFixed(2),
+        }));
         if (aiForecast && typeof aiForecast === "object") {
-          ai.forecasts = [
-            {
-              model: "AI Prognose",
-              day: +Number(aiForecast.day ?? 0).toFixed(2),
-              week: +Number(aiForecast.week ?? 0).toFixed(2),
-              month: +Number(aiForecast.month ?? 0).toFixed(2),
-              bandDay: +Number(aiForecast.bandDay ?? band(1)).toFixed(2),
-              bandWeek: +Number(aiForecast.bandWeek ?? band(5)).toFixed(2),
-              bandMonth: +Number(aiForecast.bandMonth ?? band(21)).toFixed(2),
-            },
-            ...heuristicForecasts,
-          ];
+          ai.forecasts = [...aiForecasts, ...heuristicForecasts];
+        } else if (aiForecasts.length) {
+          ai.forecasts = [...aiForecasts, ...heuristicForecasts];
         }
       } catch (e) {
         ai.reasoning = `AI-prognose niet beschikbaar: ${(e as Error).message}`;
