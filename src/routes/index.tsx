@@ -484,16 +484,29 @@ function AnalysePanel({
             />
           </div>
         </div>
-        <ForecastTable forecasts={result.ai.forecasts} amount={Number(amount) || 0} />
+        <ForecastTable
+          forecasts={result.ai.forecasts}
+          amount={Number(amount) || 0}
+          accuracy={getModelStats(result.symbol, result.market)}
+        />
         {result.stats && (
-          <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-4">
+          <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-5">
             <div><span className="text-foreground font-medium">{result.stats.samples}</span> dagen historie</div>
             <div>Drift: <span className="text-foreground font-medium">{result.stats.driftPct.toFixed(3)}%/d</span></div>
             <div>Volatiliteit: <span className="text-foreground font-medium">{result.stats.annualVolPct.toFixed(1)}%/j</span></div>
             <div>Regressietrend 90d: <span className="text-foreground font-medium">{result.stats.slopePctPerDay.toFixed(3)}%/d</span></div>
+            <div>Regime: <span className="text-foreground font-medium capitalize">{result.stats.regime}</span></div>
           </div>
         )}
       </Card>
+
+      {result.monteCarlo && (
+        <MonteCarloPanel mc={result.monteCarlo} price={result.indicators.price} amount={Number(amount) || 0} />
+      )}
+
+      {(result.macro || result.earnings || result.fearGreed) && (
+        <ContextPanel macro={result.macro} earnings={result.earnings} fearGreed={result.fearGreed} />
+      )}
 
       <EntryTiming indicators={result.indicators} />
     </div>
