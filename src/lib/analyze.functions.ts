@@ -566,6 +566,8 @@ export const analyzeAsset = createServerFn({ method: "POST" })
     const atrVal = atr(candles, 14);
     const obvVal = obvLast(candles);
     const vwapVal = vwap(candles, 20);
+    const ichi = ichimoku(candles);
+    const fib = fibLevels(candles, 90);
 
     const last = closes.length - 1;
     const price = closes[last];
@@ -593,6 +595,7 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       vwap: vwapVal,
       weekChangePct: ((price - weekAgo) / weekAgo) * 100,
       monthChangePct: ((price - monthAgo) / monthAgo) * 100,
+      ichimoku: ichi,
     };
 
     // ---- Statistische basis voor voorspellingen ----
@@ -699,6 +702,15 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       mkForecast("Momentum (5d EMA)", momentumDriftDay),
       mkForecast("Mean Reversion (RSI)", rsiDriftDay),
       mkForecast("Historische drift (1j)", histDriftDay),
+      mkForecast("LSTM-achtig (AR + decay)", arWeightedDrift(rets, 20, 8)),
+      mkForecast("Prophet-stijl (trend+seizoen)", prophetDrift(rets, candles.map((c) => c.date))),
+      (() => {
+        const hl = ouHalfLife(closes.slice(-180));
+        const ma50 = sma50[last] ?? price;
+        const gap = (ma50 - price) / price;
+        const mu = hl > 0 ? gap / Math.max(hl, 2) : 0;
+        return { ...mkForecast("Mean Reversion (OU)", Math.max(-0.01, Math.min(0.01, mu))) };
+      })(),
       {
         model: "Monte Carlo (1000 sim)",
         day: +mcBase.day.median.toFixed(2),
@@ -719,6 +731,17 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       },
     ];
     ai.forecasts = heuristicForecasts;
+
+    // Risico-statistieken + sizing
+    const risk = riskStats(rets);
+    const ouHl = ouHalfLife(closes.slice(-180));
+    // Kelly-fractie (continuous): mu/sigma², gecapt op 25%
+    const kelly = vol > 0 ? Math.max(0, Math.min(0.25, drift / (vol * vol))) : 0;
+    const slLong = Math.max(0, price - 1.5 * atrVal);
+    const tpLong = price + 2.5 * atrVal;
+    const slShort = price + 1.5 * atrVal;
+    const tpShort = Math.max(0, price - 2.5 * atrVal);
+    const riskReward = atrVal > 0 ? 2.5 / 1.5 : 0;
 
     if (apiKey) {
       const prompt = `Je bent een ervaren technisch analist. Geef een nuchtere analyse voor ${data.symbol} (${data.market === "stock" ? "aandeel/ETF" : "crypto"}).
@@ -871,5 +894,14 @@ Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidenc
         inDays: earningsInDays,
       } : null,
       fearGreed: fng,
+      fibonacci: fib,
+      risk: {
+        ...risk,
+        halfLifeDays: +ouHl.toFixed(1),
+        kellyPct: +(kelly * 100).toFixed(1),
+        riskReward: +riskReward.toFixed(2),
+        long: { stop: +slLong.toFixed(4), target: +tpLong.toFixed(4) },
+        short: { stop: +slShort.toFixed(4), target: +tpShort.toFixed(4) },
+      },
     };
   });
