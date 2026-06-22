@@ -339,6 +339,127 @@ function detectRegime(closes: number[], atrPct: number): Regime {
   return "sideways";
 }
 
+/** Ichimoku Cloud — laatste waarden. */
+function ichimoku(candles: Candle[]) {
+  const len = candles.length;
+  if (len < 52) return null;
+  const rangeMid = (w: number) => {
+    let hi = -Infinity, lo = Infinity;
+    for (let j = len - w; j < len; j++) {
+      const c = candles[j];
+      hi = Math.max(hi, c.high ?? c.close);
+      lo = Math.min(lo, c.low ?? c.close);
+    }
+    return (hi + lo) / 2;
+  };
+  const tenkan = rangeMid(9);
+  const kijun = rangeMid(26);
+  const spanA = (tenkan + kijun) / 2;
+  const spanB = rangeMid(52);
+  return { tenkan, kijun, spanA, spanB };
+}
+
+/** Fibonacci retracement over laatste `lookback` dagen. */
+function fibLevels(candles: Candle[], lookback = 90) {
+  const last = candles.slice(-lookback);
+  if (last.length < 5) return null;
+  let hi = -Infinity, lo = Infinity;
+  for (const c of last) {
+    hi = Math.max(hi, c.high ?? c.close);
+    lo = Math.min(lo, c.low ?? c.close);
+  }
+  const r = hi - lo;
+  const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1].map((p) => ({
+    pct: +(p * 100).toFixed(1),
+    price: +(hi - r * p).toFixed(4),
+  }));
+  return { high: hi, low: lo, levels };
+}
+
+/**
+ * Ornstein–Uhlenbeck half-life schatting via regressie van Δy op y_{t-1}.
+ * < 0 betekent mean-reverting. Return waarde in handelsdagen (0 = niet detecteerbaar).
+ */
+function ouHalfLife(closes: number[]): number {
+  if (closes.length < 30) return 0;
+  const x: number[] = [], y: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    y.push(closes[i] - closes[i - 1]);
+    x.push(closes[i - 1]);
+  }
+  const mx = mean(x), my = mean(y);
+  let num = 0, den = 0;
+  for (let i = 0; i < x.length; i++) {
+    num += (x[i] - mx) * (y[i] - my);
+    den += (x[i] - mx) ** 2;
+  }
+  const b = den === 0 ? 0 : num / den;
+  if (b >= 0 || b <= -1) return 0;
+  const hl = -Math.log(2) / Math.log(1 + b);
+  return isFinite(hl) && hl > 0 && hl < 500 ? hl : 0;
+}
+
+/** Gewogen autoregressive (LSTM-achtig): exponentieel-gewogen laatste returns. */
+function arWeightedDrift(returns: number[], lookback = 20, tau = 8): number {
+  const recent = returns.slice(-lookback);
+  if (!recent.length) return 0;
+  let num = 0, den = 0;
+  for (let i = 0; i < recent.length; i++) {
+    const w = Math.exp(-(recent.length - 1 - i) / tau);
+    num += w * recent[i];
+    den += w;
+  }
+  return den === 0 ? 0 : num / den;
+}
+
+/** Prophet-stijl: trend (60d gem) + dag-van-week seasonality. */
+function prophetDrift(returns: number[], dates: string[]): number {
+  const recent = returns.slice(-252);
+  if (recent.length < 30) return mean(recent);
+  const trend = mean(recent.slice(-60));
+  // align: returns[i] hoort bij dates[i+1] (close-to-close)
+  const startDateIdx = dates.length - recent.length;
+  const byDow = new Map<number, number[]>();
+  for (let i = 0; i < recent.length; i++) {
+    const d = dates[startDateIdx + i];
+    if (!d) continue;
+    const dow = new Date(d).getDay();
+    if (!byDow.has(dow)) byDow.set(dow, []);
+    byDow.get(dow)!.push(recent[i]);
+  }
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const arr = byDow.get(tomorrow.getDay()) ?? [];
+  const seasonal = arr.length >= 3 ? mean(arr) - trend : 0;
+  return trend + seasonal * 0.5;
+}
+
+/** Sharpe / Sortino / Max drawdown (op basis van log-returns). */
+function riskStats(returns: number[]) {
+  if (returns.length < 20) {
+    return { sharpe: 0, sortino: 0, maxDDPct: 0 };
+  }
+  const m = mean(returns);
+  const s = stdev(returns);
+  const annualRet = m * 252;
+  const annualVol = s * Math.sqrt(252);
+  const sharpe = annualVol === 0 ? 0 : annualRet / annualVol;
+  const downside = returns.filter((r) => r < 0);
+  const dStd = stdev(downside) * Math.sqrt(252);
+  const sortino = dStd === 0 ? 0 : annualRet / dStd;
+  let cum = 0, peak = 0, maxDD = 0;
+  for (const r of returns) {
+    cum += r;
+    if (cum > peak) peak = cum;
+    if (cum - peak < maxDD) maxDD = cum - peak;
+  }
+  return {
+    sharpe: +sharpe.toFixed(2),
+    sortino: +sortino.toFixed(2),
+    maxDDPct: +((Math.exp(maxDD) - 1) * 100).toFixed(1),
+  };
+}
+
 /** Fetch macro context (VIX, DXY, 10Y rente, SPX, BTC) in parallel. */
 async function fetchMacro(): Promise<{
   vix: number | null;
