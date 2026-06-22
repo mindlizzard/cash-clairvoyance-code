@@ -30,6 +30,9 @@ import {
   Plus,
   RefreshCw,
   ExternalLink,
+  Shield,
+  Target,
+  Layers,
 } from "lucide-react";
 import { analyzeAsset } from "@/lib/analyze.functions";
 import { fetchNews } from "@/lib/news.functions";
@@ -506,6 +509,20 @@ function AnalysePanel({
 
       {(result.macro || result.earnings || result.fearGreed) && (
         <ContextPanel macro={result.macro} earnings={result.earnings} fearGreed={result.fearGreed} />
+      )}
+
+      <IndicatorsExtraPanel
+        ichimoku={result.indicators.ichimoku}
+        price={result.indicators.price}
+        fib={result.fibonacci}
+      />
+
+      {result.risk && (
+        <RiskPanel
+          risk={result.risk}
+          price={result.indicators.price}
+          atr={result.indicators.atr}
+        />
       )}
 
       <EntryTiming indicators={result.indicators} />
