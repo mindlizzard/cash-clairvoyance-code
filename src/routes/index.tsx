@@ -30,6 +30,9 @@ import {
   Plus,
   RefreshCw,
   ExternalLink,
+  Shield,
+  Target,
+  Layers,
 } from "lucide-react";
 import { analyzeAsset } from "@/lib/analyze.functions";
 import { fetchNews } from "@/lib/news.functions";
@@ -506,6 +509,20 @@ function AnalysePanel({
 
       {(result.macro || result.earnings || result.fearGreed) && (
         <ContextPanel macro={result.macro} earnings={result.earnings} fearGreed={result.fearGreed} />
+      )}
+
+      <IndicatorsExtraPanel
+        ichimoku={result.indicators.ichimoku}
+        price={result.indicators.price}
+        fib={result.fibonacci}
+      />
+
+      {result.risk && (
+        <RiskPanel
+          risk={result.risk}
+          price={result.indicators.price}
+          atr={result.indicators.atr}
+        />
       )}
 
       <EntryTiming indicators={result.indicators} />
@@ -1400,6 +1417,259 @@ function ContextPanel({
         {earnings && earnings.inDays != null && earnings.inDays > 7 && (
           <Stat label="Earnings" value={`${earnings.inDays}d`} hint={earnings.date?.slice(0, 10) ?? ""} />
         )}
+      </div>
+    </Card>
+  );
+}
+/* ---------------- Extra indicatoren (Ichimoku + Fibonacci) ---------------- */
+
+function IndicatorsExtraPanel({
+  ichimoku,
+  price,
+  fib,
+}: {
+  ichimoku: { tenkan: number; kijun: number; spanA: number; spanB: number } | null | undefined;
+  price: number;
+  fib: { high: number; low: number; levels: { pct: number; price: number }[] } | null | undefined;
+}) {
+  if (!ichimoku && !fib) return null;
+  const cloudTop = ichimoku ? Math.max(ichimoku.spanA, ichimoku.spanB) : 0;
+  const cloudBot = ichimoku ? Math.min(ichimoku.spanA, ichimoku.spanB) : 0;
+  const cloudColor = ichimoku && ichimoku.spanA >= ichimoku.spanB ? "bullish" : "bearish";
+  const cloudPos =
+    !ichimoku ? "" :
+    price > cloudTop ? "Boven cloud (bullish)" :
+    price < cloudBot ? "Onder cloud (bearish)" : "In cloud (onbeslist)";
+  const tkCross = ichimoku ? (ichimoku.tenkan > ichimoku.kijun ? "Tenkan > Kijun (bullish)" : "Tenkan < Kijun (bearish)") : "";
+
+  // dichtstbijzijnde fib-level
+  let nearestFib: { pct: number; price: number; diffPct: number } | null = null;
+  if (fib) {
+    let best = Infinity;
+    for (const l of fib.levels) {
+      const d = Math.abs(l.price - price) / price * 100;
+      if (d < best) { best = d; nearestFib = { ...l, diffPct: d }; }
+    }
+  }
+
+  return (
+    <Card className="border-border/60 bg-card p-5">
+      <div className="mb-4 flex items-center gap-2">
+        <Layers className="h-4 w-4 text-primary" />
+        <h4 className="text-lg font-semibold">Extra indicatoren</h4>
+      </div>
+      <div className="grid gap-6 md:grid-cols-2">
+        {ichimoku && (
+          <div>
+            <p className="mb-2 text-sm font-medium">Ichimoku Cloud</p>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <Mini label="Tenkan (9)" value={ichimoku.tenkan.toFixed(2)} />
+              <Mini label="Kijun (26)" value={ichimoku.kijun.toFixed(2)} />
+              <Mini label="Span A" value={ichimoku.spanA.toFixed(2)} />
+              <Mini label="Span B" value={ichimoku.spanB.toFixed(2)} />
+            </div>
+            <div className="mt-3 space-y-1 text-xs">
+              <p>
+                <span className="text-muted-foreground">Cloud:</span>{" "}
+                <span className={cloudColor === "bullish" ? "text-accent" : "text-destructive"}>
+                  {cloudColor === "bullish" ? "Bullish (groen)" : "Bearish (rood)"}
+                </span>
+              </p>
+              <p><span className="text-muted-foreground">Prijs:</span> {cloudPos}</p>
+              <p><span className="text-muted-foreground">Kruising:</span> {tkCross}</p>
+            </div>
+          </div>
+        )}
+        {fib && (
+          <div>
+            <p className="mb-2 text-sm font-medium">
+              Fibonacci retracement <span className="text-xs text-muted-foreground">(90d range)</span>
+            </p>
+            <div className="space-y-1 text-xs">
+              {fib.levels.map((l) => {
+                const isNear = nearestFib?.pct === l.pct;
+                const above = price >= l.price;
+                return (
+                  <div
+                    key={l.pct}
+                    className={`flex items-center justify-between rounded px-2 py-1 ${isNear ? "bg-primary/10 ring-1 ring-primary/40" : ""}`}
+                  >
+                    <span className="text-muted-foreground">{l.pct.toFixed(1)}%</span>
+                    <span className="tabular-nums">€{l.price.toFixed(2)}</span>
+                    <span className={`text-[10px] ${above ? "text-accent" : "text-destructive"}`}>
+                      {above ? "↑ boven" : "↓ onder"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            {nearestFib && (
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                Dichtstbijzijnde: {nearestFib.pct.toFixed(1)}% (€{nearestFib.price.toFixed(2)}, {nearestFib.diffPct.toFixed(2)}% van prijs)
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function Mini({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border/40 bg-background/40 p-2">
+      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+      <p className="mt-0.5 text-sm font-medium tabular-nums">{value}</p>
+    </div>
+  );
+}
+
+/* ---------------- Risico & Position Sizing ---------------- */
+
+function RiskPanel({
+  risk,
+  price,
+  atr,
+}: {
+  risk: {
+    sharpe: number;
+    sortino: number;
+    maxDDPct: number;
+    halfLifeDays: number;
+    kellyPct: number;
+    riskReward: number;
+    long: { stop: number; target: number };
+    short: { stop: number; target: number };
+  };
+  price: number;
+  atr: number;
+}) {
+  const [side, setSide] = useState<"long" | "short">("long");
+  const [portfolio, setPortfolio] = useState("10000");
+  const [riskPct, setRiskPct] = useState("1");
+
+  const lvl = side === "long" ? risk.long : risk.short;
+  const portfolioVal = Number(portfolio) || 0;
+  const riskFraction = (Number(riskPct) || 0) / 100;
+  const perShareRisk = Math.abs(price - lvl.stop);
+  const fixedRiskShares = perShareRisk > 0 ? Math.floor((portfolioVal * riskFraction) / perShareRisk) : 0;
+  const fixedRiskCost = fixedRiskShares * price;
+  const kellyShares = Math.floor((portfolioVal * (risk.kellyPct / 100)) / price);
+  const kellyCost = kellyShares * price;
+  const potentialProfit = side === "long" ? (lvl.target - price) * fixedRiskShares : (price - lvl.target) * fixedRiskShares;
+  const potentialLoss = perShareRisk * fixedRiskShares;
+
+  const sharpeHint =
+    risk.sharpe > 1 ? "Goed" : risk.sharpe > 0.5 ? "Acceptabel" : risk.sharpe > 0 ? "Zwak" : "Verlies";
+
+  return (
+    <Card className="border-border/60 bg-card p-5">
+      <div className="mb-4 flex items-center gap-2">
+        <Shield className="h-4 w-4 text-primary" />
+        <h4 className="text-lg font-semibold">Risico & Position Sizing</h4>
+      </div>
+
+      <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Stat label="Sharpe (1j)" value={risk.sharpe.toFixed(2)} hint={sharpeHint} tone={risk.sharpe >= 1 ? "up" : risk.sharpe < 0 ? "down" : undefined} />
+        <Stat label="Sortino (1j)" value={risk.sortino.toFixed(2)} hint="Downside-only" tone={risk.sortino >= 1 ? "up" : risk.sortino < 0 ? "down" : undefined} />
+        <Stat label="Max drawdown" value={`${risk.maxDDPct.toFixed(1)}%`} tone="down" hint="Grootste piek-dal" />
+        <Stat label="OU half-life" value={risk.halfLifeDays > 0 ? `${risk.halfLifeDays.toFixed(0)}d` : "—"} hint={risk.halfLifeDays > 0 ? "Mean-reverting" : "Trend-volgend"} />
+      </div>
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <div className="inline-flex rounded-lg border border-border/60 bg-secondary p-1">
+          {(["long", "short"] as const).map((s) => (
+            <button
+              key={s}
+              onClick={() => setSide(s)}
+              className={`rounded-md px-3 py-1 text-xs font-medium transition ${
+                side === s ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {s === "long" ? "Long" : "Short"}
+            </button>
+          ))}
+        </div>
+        <span className="text-xs text-muted-foreground">
+          ATR (14) = €{atr.toFixed(2)} · 1.5×ATR stop, 2.5×ATR target (R/R {risk.riskReward.toFixed(2)})
+        </span>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-3">
+        <div className="rounded-lg border border-accent/40 bg-accent/5 p-3">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Target className="h-3.5 w-3.5 text-accent" />
+            Target ({side})
+          </div>
+          <p className="mt-1 text-lg font-semibold tabular-nums">€{lvl.target.toFixed(2)}</p>
+          <p className="text-[11px] text-muted-foreground">
+            {(((lvl.target - price) / price) * 100).toFixed(2)}% vanaf nu
+          </p>
+        </div>
+        <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Shield className="h-3.5 w-3.5 text-destructive" />
+            Stop-loss ({side})
+          </div>
+          <p className="mt-1 text-lg font-semibold tabular-nums">€{lvl.stop.toFixed(2)}</p>
+          <p className="text-[11px] text-muted-foreground">
+            {(((lvl.stop - price) / price) * 100).toFixed(2)}% vanaf nu
+          </p>
+        </div>
+        <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+          <div className="text-sm font-medium">Risk / Reward</div>
+          <p className="mt-1 text-lg font-semibold tabular-nums">1 : {risk.riskReward.toFixed(2)}</p>
+          <p className="text-[11px] text-muted-foreground">Per trade verwachting</p>
+        </div>
+      </div>
+
+      <div className="mt-5 grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="text-xs text-muted-foreground">Portfolio waarde (€)</label>
+          <Input type="number" min={0} value={portfolio} onChange={(e) => setPortfolio(e.target.value)} />
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground">Risico per trade (%)</label>
+          <Input type="number" step="0.1" min={0} max={10} value={riskPct} onChange={(e) => setRiskPct(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <div className="rounded-lg border border-border/60 bg-background/40 p-3 text-sm">
+          <p className="mb-1 font-medium">Fixed-risk sizing</p>
+          <p className="text-xs text-muted-foreground">
+            Verlies max {riskPct}% (€{(portfolioVal * riskFraction).toFixed(0)}) bij stop.
+          </p>
+          <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+            <span className="text-muted-foreground">Aantal:</span>
+            <span className="text-right tabular-nums font-medium">{fixedRiskShares}</span>
+            <span className="text-muted-foreground">Positie waarde:</span>
+            <span className="text-right tabular-nums">€{fixedRiskCost.toFixed(0)}</span>
+            <span className="text-muted-foreground">Max verlies:</span>
+            <span className="text-right tabular-nums text-destructive">−€{potentialLoss.toFixed(0)}</span>
+            <span className="text-muted-foreground">Verwachte winst:</span>
+            <span className="text-right tabular-nums text-accent">+€{potentialProfit.toFixed(0)}</span>
+          </div>
+        </div>
+        <div className="rounded-lg border border-border/60 bg-background/40 p-3 text-sm">
+          <p className="mb-1 font-medium">Kelly criterium</p>
+          <p className="text-xs text-muted-foreground">
+            Optimale fractie o.b.v. drift/volatiliteit: <strong>{risk.kellyPct.toFixed(1)}%</strong> (gecapt op 25%).
+          </p>
+          <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+            <span className="text-muted-foreground">Aantal:</span>
+            <span className="text-right tabular-nums font-medium">{kellyShares}</span>
+            <span className="text-muted-foreground">Positie waarde:</span>
+            <span className="text-right tabular-nums">€{kellyCost.toFixed(0)}</span>
+            <span className="text-muted-foreground">% van portfolio:</span>
+            <span className="text-right tabular-nums">
+              {portfolioVal > 0 ? ((kellyCost / portfolioVal) * 100).toFixed(1) : "0"}%
+            </span>
+          </div>
+          <p className="mt-2 text-[10px] text-muted-foreground">
+            Veel traders gebruiken ½-Kelly of ¼-Kelly om volatiliteit te beperken.
+          </p>
+        </div>
       </div>
     </Card>
   );
