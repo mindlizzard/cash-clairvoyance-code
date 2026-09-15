@@ -65,6 +65,8 @@ export const Route = createFileRoute("/")({
         property: "og:description",
         content: "AI-gedreven analyse, prognose, nieuws-sentiment en backtests voor aandelen en crypto.",
       },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
     ],
   }),
   component: Home,
@@ -165,63 +167,57 @@ function Home() {
     setTab("analyse");
   };
 
+  const navItems = [
+    { value: "analyse", label: "Analyse", icon: Activity },
+    { value: "watchlist", label: "Watchlist", icon: Star },
+    { value: "portfolio", label: "Portfolio", icon: Wallet },
+    { value: "news", label: "Nieuws", icon: Newspaper },
+    { value: "alerts", label: "Alerts", icon: Bell },
+  ];
+
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <header className="border-b border-border/60 bg-card/40 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-4">
-          <div className="flex items-center gap-2">
-            <div className="grid h-9 w-9 place-items-center rounded-lg bg-[image:var(--gradient-hero)] shadow-[var(--shadow-glow)]">
-              <Sparkles className="h-5 w-5 text-primary-foreground" />
+      <header className="sticky top-0 z-40 border-b border-border/60 bg-background/90 backdrop-blur-xl">
+        <div className="mx-auto grid max-w-6xl grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 sm:px-6">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-primary/30 bg-primary/10">
+              <Activity className="h-5 w-5 text-primary" />
             </div>
-            <div>
-              <h1 className="text-base font-semibold leading-none">Beursziener</h1>
-              <p className="text-xs text-muted-foreground">AI koersanalyse & tools</p>
+            <div className="min-w-0">
+              <h1 className="truncate text-base font-semibold">Beursziener</h1>
+              <p className="truncate text-[11px] text-muted-foreground">AI trading cockpit</p>
             </div>
           </div>
-          <span className="rounded-full border border-border/60 px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-            Live data
-          </span>
+          <div className="flex items-center gap-2 text-[10px] font-semibold uppercase text-accent">
+            <span className="h-2 w-2 rounded-full bg-accent shadow-[0_0_12px_var(--color-accent)]" /> Live
+          </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-5 py-8">
-        <section className="mb-6">
-          <h2 className="text-3xl font-bold tracking-tight md:text-4xl">
-            Analyseer, volg, test en word gewaarschuwd
-          </h2>
-          <p className="mt-2 max-w-2xl text-sm text-muted-foreground md:text-base">
-            Technische indicatoren, AI-prognose, watchlist, portfolio, nieuws-sentiment, backtests en prijsalerts — alles in één.
-          </p>
-          <p className="mt-3 inline-flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-1.5 text-xs text-warning">
-            <AlertTriangle className="h-3.5 w-3.5" />
-            Geen financieel advies. Beleg verantwoord.
-          </p>
-        </section>
-
-        <Card className="mb-6 border-border/60 bg-card p-5">
-          <div className="mb-4 inline-flex rounded-lg border border-border/60 bg-secondary p-1">
+      <main className="mx-auto max-w-6xl px-4 pb-28 pt-4 sm:px-6 sm:pb-10">
+        <Card className="mb-4 border-border/70 bg-card/90 p-3 shadow-lg backdrop-blur sm:p-4">
+          <div className="mb-3 inline-flex rounded-md border border-border/60 bg-background/60 p-1">
             {(["stock", "crypto"] as Market[]).map((m) => (
-              <button
+              <Button
                 key={m}
+                type="button"
+                size="sm"
+                variant={market === m ? "default" : "ghost"}
                 onClick={() => setMarket(m)}
-                className={`rounded-md px-4 py-1.5 text-sm font-medium transition ${
-                  market === m
-                    ? "bg-primary text-primary-foreground shadow"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
+                className="h-8"
               >
                 {m === "stock" ? "Aandelen & ETF" : "Crypto"}
-              </button>
+              </Button>
             ))}
           </div>
-          <form onSubmit={submit} className="flex flex-col gap-3 sm:flex-row">
+          <form onSubmit={submit} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
             <Input
               value={symbol}
               onChange={(e) => setSymbol(e.target.value)}
               placeholder={market === "stock" ? "Bv. AAPL, NVDA, SPY" : "Bv. bitcoin, ethereum"}
               className="flex-1"
             />
-            <Button type="submit" disabled={mutation.isPending} className="sm:w-44">
+            <Button type="submit" disabled={mutation.isPending} className="h-10 px-4 sm:w-44">
               {mutation.isPending ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Analyseren…
@@ -231,15 +227,18 @@ function Home() {
               )}
             </Button>
           </form>
-          <div className="mt-4 flex flex-wrap gap-2">
+          <div className="no-scrollbar mt-3 flex gap-2 overflow-x-auto pb-1">
             {PRESETS[market].map((p) => (
-              <button
+              <Button
                 key={p.symbol}
+                type="button"
+                size="sm"
+                variant="secondary"
                 onClick={() => pickPreset(p.symbol)}
-                className="rounded-full border border-border/60 bg-secondary/60 px-3 py-1 text-xs text-muted-foreground transition hover:border-primary/60 hover:text-foreground"
+                className="shrink-0"
               >
                 {p.label}
-              </button>
+              </Button>
             ))}
           </div>
         </Card>
@@ -251,18 +250,13 @@ function Home() {
         )}
 
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="grid w-full grid-cols-3 md:grid-cols-6">
-            <TabsTrigger value="analyse"><Activity className="mr-1 h-3.5 w-3.5" />Analyse</TabsTrigger>
-            <TabsTrigger value="watchlist"><Star className="mr-1 h-3.5 w-3.5" />Watchlist</TabsTrigger>
-            <TabsTrigger value="portfolio"><Wallet className="mr-1 h-3.5 w-3.5" />Portfolio</TabsTrigger>
-            <TabsTrigger value="news"><Newspaper className="mr-1 h-3.5 w-3.5" />Nieuws</TabsTrigger>
-            <TabsTrigger value="backtest"><FlaskConical className="mr-1 h-3.5 w-3.5" />Backtest</TabsTrigger>
-            <TabsTrigger value="alerts"><Bell className="mr-1 h-3.5 w-3.5" />Alerts</TabsTrigger>
+          <TabsList className="no-scrollbar hidden h-auto w-full justify-start gap-1 overflow-x-auto rounded-none border-b border-border bg-transparent p-0 sm:flex">
+            {navItems.map((item) => <TabsTrigger key={item.value} value={item.value} className="rounded-none border-b-2 border-transparent px-4 py-3 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary"><item.icon className="mr-1.5 h-4 w-4" />{item.label}</TabsTrigger>)}
           </TabsList>
 
           <TabsContent value="analyse" className="mt-6">
             {result ? (
-              <AnalysePanel result={result} amount={amount} setAmount={setAmount} />
+              <AnalysePanel result={result} amount={amount} setAmount={setAmount} onRefresh={() => submit()} onAlert={() => setTab("alerts")} />
             ) : (
               <EmptyHint text="Kies hierboven een ticker en klik Analyseer." />
             )}
@@ -286,10 +280,6 @@ function Home() {
             />
           </TabsContent>
 
-          <TabsContent value="backtest" className="mt-6">
-            <BacktestPanel result={result} />
-          </TabsContent>
-
           <TabsContent value="alerts" className="mt-6">
             <AlertsPanel currentResult={result} onOpen={loadFrom} />
           </TabsContent>
@@ -299,8 +289,82 @@ function Home() {
           Koersdata: Yahoo Finance & CoinGecko. Nieuws: Yahoo. Analyse via Lovable AI. Lokale opslag (browser).
         </footer>
       </main>
+      <div className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-background/95 px-2 pb-[max(0.55rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-xl sm:hidden">
+        <div className="mx-auto grid max-w-md grid-cols-5">
+          {navItems.map((item) => (
+            <Button key={item.value} type="button" variant="ghost" onClick={() => setTab(item.value)} className={`h-12 min-w-0 flex-col gap-1 px-1 text-[9px] ${tab === item.value ? "text-primary" : "text-muted-foreground"}`}>
+              <item.icon className="h-5 w-5" />{item.label}
+            </Button>
+          ))}
+        </div>
+      </div>
     </div>
   );
+}
+
+function TradePlanPanel({ result }: { result: AnalyzeResult }) {
+  const plan = result.tradePlan;
+  const forecasts = [
+    ["1 uur", result.hourlyForecasts.find((row) => row.hours === 1)?.expectedPct ?? 0],
+    ["4 uur", result.hourlyForecasts.find((row) => row.hours === 4)?.expectedPct ?? 0],
+    ["24 uur", result.hourlyForecasts.find((row) => row.hours === 24)?.expectedPct ?? 0],
+    ["1 week", result.ai.forecasts.length ? result.ai.forecasts.reduce((sum, row) => sum + row.week, 0) / result.ai.forecasts.length : 0],
+  ] as const;
+  const tone = plan.signal === "BUY" ? "text-accent border-accent/40 bg-accent/10" : plan.signal === "SELL" ? "text-destructive border-destructive/40 bg-destructive/10" : plan.signal === "NO_TRADE" ? "text-warning border-warning/40 bg-warning/10" : "text-primary border-primary/40 bg-primary/10";
+  return (
+    <Card className="border-border/70 bg-card p-4 sm:p-5">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-border pb-4">
+        <div className="min-w-0"><p className="text-[10px] font-bold uppercase text-muted-foreground">AI Handelsplan</p><div className={`mt-1 inline-flex rounded-md border px-3 py-1.5 text-2xl font-bold ${tone}`}>{plan.signal.replace("_", " ")}</div></div>
+        <div className="text-right"><p className="text-[10px] font-bold uppercase text-muted-foreground">Vertrouwen</p><p className="text-2xl font-bold tabular-nums">{plan.confidence}%</p><p className="text-[10px] capitalize text-muted-foreground">Risico {plan.riskLevel}</p></div>
+      </div>
+      {plan.eventRisk && <p className="mt-4 flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 p-2 text-xs text-warning"><AlertTriangle className="h-4 w-4" />{plan.eventRisk}</p>}
+      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {forecasts.map(([label, value]) => <Mini key={label} label={label} value={`${value >= 0 ? "+" : ""}${value.toFixed(2)}%`} />)}
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <Mini label="Instapzone" value={`€${plan.entryLow.toFixed(2)} – €${plan.entryHigh.toFixed(2)}`} />
+        <Mini label="Stop-loss" value={`€${plan.stopLoss.toFixed(2)}`} />
+        <Mini label="Take profit 1" value={`€${plan.takeProfit1.toFixed(2)}`} />
+        <Mini label="Take profit 2" value={`€${plan.takeProfit2.toFixed(2)}`} />
+        <Mini label="Risk / reward" value={`1 : ${plan.riskReward.toFixed(2)}`} />
+        <Mini label="Kans omhoog / omlaag" value={`${plan.probabilityUp}% / ${plan.probabilityDown}%`} />
+      </div>
+      <div className="mt-4 space-y-2">
+        {plan.reasons.map((reason, index) => <div key={reason} className="flex gap-3 text-sm"><span className="grid h-5 w-5 shrink-0 place-items-center rounded-sm bg-primary/10 text-[10px] font-bold text-primary">{index + 1}</span><p className="text-muted-foreground">{reason}</p></div>)}
+      </div>
+      <p className="mt-4 border-l-2 border-destructive pl-3 text-xs text-muted-foreground"><strong className="text-foreground">Invalidatie:</strong> {plan.invalidation}</p>
+    </Card>
+  );
+}
+
+function HourlyForecastPanel({ result }: { result: AnalyzeResult }) {
+  const [hours, setHours] = useState(4);
+  const active = result.hourlyForecasts.find((row) => row.hours === hours) ?? result.hourlyForecasts[0];
+  const chartData = result.hourlyForecasts.map((row) => ({ label: `${row.hours}u`, koers: row.expectedPrice, laag: row.low, hoog: row.high }));
+  return (
+    <div className="space-y-4">
+      <div className="no-scrollbar flex gap-2 overflow-x-auto">
+        {result.hourlyForecasts.map((row) => <Button key={row.hours} type="button" size="sm" variant={hours === row.hours ? "default" : "secondary"} onClick={() => setHours(row.hours)} className="shrink-0">{row.hours}u</Button>)}
+      </div>
+      <Card className="border-border/70 bg-card p-4 sm:p-5">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+          <div><p className="text-[10px] font-bold uppercase text-muted-foreground">Verwachting {active.hours} uur</p><p className={`mt-1 text-3xl font-bold ${active.expectedPct >= 0 ? "text-accent" : "text-destructive"}`}>{active.expectedPct >= 0 ? "+" : ""}{active.expectedPct.toFixed(2)}%</p></div>
+          <div className="text-right"><p className="text-[10px] uppercase text-muted-foreground">Kans omhoog</p><p className="text-xl font-bold">{active.probabilityUp}%</p></div>
+        </div>
+        <div className="mt-4 grid grid-cols-3 gap-2"><Mini label="Verwachte prijs" value={`€${active.expectedPrice.toFixed(2)}`} /><Mini label="Ondergrens" value={`€${active.low.toFixed(2)}`} /><Mini label="Bovengrens" value={`€${active.high.toFixed(2)}`} /></div>
+        <div className="mt-5 h-56 w-full">
+          <ResponsiveContainer width="100%" height="100%"><ComposedChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" /><XAxis dataKey="label" tick={{ fill: "var(--color-muted-foreground)", fontSize: 11 }} /><YAxis domain={["auto", "auto"]} width={52} tick={{ fill: "var(--color-muted-foreground)", fontSize: 10 }} /><Tooltip contentStyle={{ background: "var(--color-popover)", border: "1px solid var(--color-border)", borderRadius: 8 }} /><Area type="monotone" dataKey="hoog" fill="var(--color-primary)" fillOpacity={0.08} stroke="transparent" /><Line type="monotone" dataKey="koers" stroke="var(--color-primary)" strokeWidth={2.5} dot={{ fill: "var(--color-primary)" }} /></ComposedChart></ResponsiveContainer>
+        </div>
+      </Card>
+      <Card className="border-border/70 bg-card p-4"><p className="text-[10px] font-bold uppercase text-muted-foreground">4u kompas</p><div className="mt-3 grid grid-cols-3 items-center gap-2 text-center"><div className="text-xs text-destructive">Bearish</div><div className={`mx-auto grid h-20 w-20 place-items-center rounded-full border-4 ${((result.hourlyForecasts.find((row) => row.hours === 4)?.expectedPct ?? 0) >= 0) ? "border-accent text-accent" : "border-destructive text-destructive"}`}><TrendingUp className="h-8 w-8" /></div><div className="text-xs text-accent">Bullish</div></div></Card>
+    </div>
+  );
+}
+
+function EntrySetupPanel({ result }: { result: AnalyzeResult }) {
+  const plan = result.tradePlan;
+  const verdict = plan.signal === "BUY" ? "Ja" : plan.signal === "NO_TRADE" || plan.signal === "SELL" ? "Nee" : "Misschien";
+  return <Card className="border-border/70 bg-card p-4 sm:p-5"><div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase text-muted-foreground">Goed instapmoment?</p><h3 className="mt-1 text-2xl font-bold">{verdict}</h3></div><Target className="h-8 w-8 text-primary" /></div><div className="mt-4 grid gap-2 sm:grid-cols-2"><Mini label="Agressieve entry" value={`€${plan.entryHigh.toFixed(2)}`} /><Mini label="Conservatieve entry" value={`€${plan.entryLow.toFixed(2)}`} /><Mini label="Breakout boven" value={`€${result.levels.resistance.toFixed(2)}`} /><Mini label="Pullback-zone" value={`€${plan.entryLow.toFixed(2)} – €${plan.entryHigh.toFixed(2)}`} /></div><p className="mt-4 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs text-muted-foreground"><strong className="text-destructive">Niet instappen als:</strong> {plan.invalidation}</p><div className="mt-4"><div className="mb-1 flex justify-between text-[10px] uppercase text-muted-foreground"><span>Risico</span><span>Potentieel rendement</span></div><div className="grid h-2 grid-cols-[minmax(0,1fr)_minmax(0,1.67fr)] gap-1"><span className="rounded-full bg-destructive" /><span className="rounded-full bg-accent" /></div><p className="mt-1 text-right text-xs font-semibold">1 : {plan.riskReward.toFixed(2)}</p></div></Card>;
 }
 
 function EmptyHint({ text }: { text: string }) {
@@ -315,60 +379,80 @@ function AnalysePanel({
   result,
   amount,
   setAmount,
+  onRefresh,
+  onAlert,
 }: {
   result: AnalyzeResult;
   amount: string;
   setAmount: (v: string) => void;
+  onRefresh: () => void;
+  onAlert: () => void;
 }) {
+  const [section, setSection] = useState("overview");
   const inWatch = useStore().watchlist.some(
     (w) => w.symbol === result.symbol && w.market === result.market,
   );
+  const sections = [
+    ["overview", "Overzicht"],
+    ["hourly", "Uurprognose"],
+    ["plan", "AI Handelsplan"],
+    ["models", "Modellen"],
+    ["montecarlo", "Monte Carlo"],
+    ["risk", "Risico"],
+    ["entry", "Instapmoment"],
+  ];
+  const plan = result.tradePlan;
+  const forecastAverage = (key: "day" | "week" | "month") =>
+    result.ai.forecasts.length
+      ? result.ai.forecasts.reduce((sum, forecast) => sum + forecast[key], 0) / result.ai.forecasts.length
+      : 0;
+  const signalTone = plan.signal === "BUY" ? "text-accent" : plan.signal === "SELL" ? "text-destructive" : plan.signal === "NO_TRADE" ? "text-warning" : "text-primary";
 
   return (
-    <div className="space-y-6">
-      <Card className="overflow-hidden border-border/60 bg-card p-0">
-        <div className="flex flex-col gap-4 p-5 md:flex-row md:items-center md:justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-wider text-muted-foreground">
-              {result.market === "stock" ? "Aandeel" : "Crypto"}
-            </p>
-            <h3 className="text-2xl font-bold">{result.symbol}</h3>
-            <div className="mt-1 flex items-baseline gap-2">
-              <span className="text-3xl font-semibold tabular-nums">
-                €{result.indicators.price.toFixed(2)}
-              </span>
-              <span
-                className={`flex items-center text-sm font-medium tabular-nums ${
-                  result.indicators.changePct >= 0 ? "text-accent" : "text-destructive"
-                }`}
-              >
-                {result.indicators.changePct >= 0 ? (
-                  <TrendingUp className="mr-1 h-4 w-4" />
-                ) : (
-                  <TrendingDown className="mr-1 h-4 w-4" />
-                )}
-                {result.indicators.changePct.toFixed(2)}%
+    <div className="space-y-4">
+      <Card className="overflow-hidden border-border/70 bg-card/90 shadow-xl backdrop-blur">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 p-4 sm:p-5">
+          <div className="min-w-0">
+            <div className="mb-1 flex items-center gap-2 text-[10px] font-bold uppercase text-muted-foreground">
+              <span>{result.market === "stock" ? "Aandeel / ETF" : "Crypto"}</span><span>•</span><span>Realtime analyse</span>
+            </div>
+            <h2 className="truncate text-2xl font-bold">{result.symbol}</h2>
+            <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <span className="text-3xl font-bold tabular-nums">€{result.indicators.price.toFixed(2)}</span>
+              <span className={`inline-flex items-center text-sm font-bold tabular-nums ${result.indicators.changePct >= 0 ? "text-accent" : "text-destructive"}`}>
+                {result.indicators.changePct >= 0 ? <TrendingUp className="mr-1 h-4 w-4" /> : <TrendingDown className="mr-1 h-4 w-4" />}
+                {result.indicators.changePct >= 0 ? "+" : ""}{result.indicators.changePct.toFixed(2)}%
               </span>
             </div>
           </div>
-          <div className="flex flex-col items-start gap-3 md:items-end">
-            <SignalBadge signal={result.ai.signal} confidence={result.ai.confidence} />
-            <Button
-              variant={inWatch ? "secondary" : "outline"}
-              size="sm"
-              onClick={() =>
-                inWatch
-                  ? store.removeWatch(result.symbol, result.market)
-                  : store.addWatch({ symbol: result.symbol, market: result.market })
-              }
-            >
-              <Star className={`mr-1.5 h-3.5 w-3.5 ${inWatch ? "fill-current" : ""}`} />
-              {inWatch ? "In watchlist" : "Aan watchlist"}
+          <div className="text-right">
+            <p className="text-[9px] font-bold uppercase text-muted-foreground">AI signaal</p>
+            <p className={`mt-1 text-xl font-bold ${signalTone}`}>{plan.signal.replace("_", " ")}</p>
+            <p className="text-[11px] text-muted-foreground">{plan.confidence}% vertrouwen</p>
+          </div>
+          <p className="col-span-2 border-l-2 border-primary pl-3 text-xs leading-relaxed text-muted-foreground">{plan.summary}</p>
+          <div className="col-span-2 grid grid-cols-3 gap-2">
+            <Button size="sm" variant={inWatch ? "secondary" : "outline"} onClick={() => inWatch ? store.removeWatch(result.symbol, result.market) : store.addWatch({ symbol: result.symbol, market: result.market })}>
+              <Star className={inWatch ? "fill-current" : ""} /><span className="hidden xs:inline">Watchlist</span>
             </Button>
+            <Button size="sm" variant="outline" onClick={onAlert}><Bell /><span className="hidden xs:inline">Alert</span></Button>
+            <Button size="sm" variant="outline" onClick={onRefresh}><RefreshCw /><span className="hidden xs:inline">Vernieuw</span></Button>
           </div>
         </div>
+      </Card>
 
-        <div className="h-64 w-full bg-background/40 px-2 pb-3">
+      <div className="no-scrollbar -mx-4 overflow-x-auto border-y border-border bg-background/80 px-4 sm:mx-0 sm:rounded-md sm:border">
+        <div className="flex min-w-max gap-5">
+          {sections.map(([value, label]) => (
+            <Button key={value} type="button" variant="ghost" onClick={() => setSection(value)} className={`h-11 rounded-none border-b-2 px-0 text-xs ${section === value ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>
+              {label}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {section === "overview" && <>
+        <div className="h-56 w-full rounded-md border border-border bg-card px-1 py-3 sm:h-72">
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={result.chart}>
               <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.3 0.02 260)" />
@@ -395,28 +479,7 @@ function AnalysePanel({
             </ComposedChart>
           </ResponsiveContainer>
         </div>
-
-        {result.chart.some((c) => c.volume) && (
-          <div className="h-24 w-full bg-background/30 px-2 pb-3">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={result.chart}>
-                <XAxis dataKey="date" hide />
-                <YAxis hide />
-                <Tooltip
-                  contentStyle={{
-                    background: "oklch(0.21 0.022 260)",
-                    border: "1px solid oklch(0.3 0.02 260)",
-                    borderRadius: 8,
-                  }}
-                />
-                <Bar dataKey="volume" fill="oklch(0.72 0.18 235 / 0.5)" name="Volume" />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-      </Card>
-
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
         <Stat label="RSI (14)" value={result.indicators.rsi?.toFixed(1) ?? "—"} hint={rsiHint(result.indicators.rsi)} />
         <Stat
           label="MACD"
@@ -450,82 +513,56 @@ function AnalysePanel({
         <Stat label="Maand" value={`${result.indicators.monthChangePct.toFixed(2)}%`} tone={result.indicators.monthChangePct >= 0 ? "up" : "down"} />
         <Stat label="SMA20" value={result.indicators.sma20?.toFixed(2) ?? "—"} />
         <Stat label="SMA50" value={result.indicators.sma50?.toFixed(2) ?? "—"} />
-      </div>
+        </div>
+        <Card className="border-border/70 bg-card p-4">
+          <div className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+            <Mini label="Trend" value={result.stats.regime === "bull" ? "Bullish" : result.stats.regime === "bear" ? "Bearish" : "Zijwaarts"} />
+            <Mini label="Momentum" value={(result.indicators.macdHist ?? 0) >= 0 ? "Positief" : "Negatief"} />
+            <Mini label="Support" value={`€${result.levels.support.toFixed(2)}`} />
+            <Mini label="Resistance" value={`€${result.levels.resistance.toFixed(2)}`} />
+          </div>
+          <p className="mt-4 text-sm leading-relaxed text-muted-foreground">{result.ai.reasoning || plan.summary}</p>
+        </Card>
+        <IndicatorsExtraPanel ichimoku={result.indicators.ichimoku} price={result.indicators.price} fib={result.fibonacci} />
+      </>}
 
-      <Card className="border-border/60 bg-card p-5">
-        <div className="mb-3 flex items-center gap-2">
-          <div className="grid h-7 w-7 place-items-center rounded-md bg-[image:var(--gradient-hero)]">
-            <Sparkles className="h-4 w-4 text-primary-foreground" />
-          </div>
-          <h4 className="text-lg font-semibold">AI Prognose</h4>
-          <span className="ml-auto text-xs text-muted-foreground">Vertrouwen: {result.ai.confidence}%</span>
-        </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          <Block icon={<Activity className="h-4 w-4 text-primary" />} title="Korte termijn (1–2 weken)" text={result.ai.shortTerm || "—"} />
-          <Block icon={<TrendingUp className="h-4 w-4 text-accent" />} title="Lange termijn (3–6 mnd)" text={result.ai.longTerm || "—"} />
-          <Block title="Analyse" text={result.ai.reasoning || "—"} />
-          <Block title="Risico's" text={result.ai.risks || "—"} tone="warning" />
-        </div>
-      </Card>
+      {section === "hourly" && <HourlyForecastPanel result={result} />}
 
-      <Card className="border-border/60 bg-card p-5">
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h4 className="text-lg font-semibold">Voorspellingen per model</h4>
-            <p className="text-xs text-muted-foreground">
-              Verwacht rendement (%) ± 1σ-band (historische volatiliteit) en geprojecteerde waarde.
-            </p>
+      {section === "plan" && <TradePlanPanel result={result} />}
+
+      {section === "models" && <>
+        <Card className="border-border/70 bg-card p-4 sm:p-5">
+          <div className="mb-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+            <div><h3 className="text-lg font-semibold">Modelensemble</h3><p className="text-xs text-muted-foreground">Het model met de beste recente hit-rate telt het zwaarst mee.</p></div>
+            <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">Inleg €</span><Input type="number" min={0} value={amount} onChange={(e) => setAmount(e.target.value)} className="w-28" /></div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Inleg €</span>
-            <Input
-              type="number"
-              min={0}
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              className="w-32"
-            />
-          </div>
-        </div>
-        <ForecastTable
-          forecasts={result.ai.forecasts}
-          amount={Number(amount) || 0}
-          accuracy={getModelStats(result.symbol, result.market)}
-        />
-        {result.stats && (
+          <ForecastTable forecasts={result.ai.forecasts} amount={Number(amount) || 0} accuracy={getModelStats(result.symbol, result.market)} />
           <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-5">
-            <div><span className="text-foreground font-medium">{result.stats.samples}</span> dagen historie</div>
-            <div>Drift: <span className="text-foreground font-medium">{result.stats.driftPct.toFixed(3)}%/d</span></div>
-            <div>Volatiliteit: <span className="text-foreground font-medium">{result.stats.annualVolPct.toFixed(1)}%/j</span></div>
-            <div>Regressietrend 90d: <span className="text-foreground font-medium">{result.stats.slopePctPerDay.toFixed(3)}%/d</span></div>
-            <div>Regime: <span className="text-foreground font-medium capitalize">{result.stats.regime}</span></div>
+            <div><span className="font-medium text-foreground">{result.stats.samples}</span> dagen</div>
+            <div>Drift <span className="font-medium text-foreground">{result.stats.driftPct.toFixed(3)}%</span></div>
+            <div>Vol <span className="font-medium text-foreground">{result.stats.annualVolPct.toFixed(1)}%</span></div>
+            <div>Trend <span className="font-medium text-foreground">{result.stats.slopePctPerDay.toFixed(3)}%</span></div>
+            <div className="capitalize">{result.stats.regime}</div>
           </div>
-        )}
-      </Card>
+        </Card>
+        <BacktestPanel result={result} />
+      </>}
 
-      {result.monteCarlo && (
-        <MonteCarloPanel mc={result.monteCarlo} price={result.indicators.price} amount={Number(amount) || 0} />
-      )}
+      {section === "montecarlo" && result.monteCarlo && <MonteCarloPanel mc={result.monteCarlo} price={result.indicators.price} amount={Number(amount) || 0} />}
 
-      {(result.macro || result.earnings || result.fearGreed) && (
-        <ContextPanel macro={result.macro} earnings={result.earnings} fearGreed={result.fearGreed} />
-      )}
+      {section === "risk" && <>
+        {(result.macro || result.earnings || result.fearGreed) && <ContextPanel macro={result.macro} earnings={result.earnings} fearGreed={result.fearGreed} />}
+        {result.risk && <RiskPanel risk={result.risk} price={result.indicators.price} atr={result.indicators.atr} />}
+      </>}
 
-      <IndicatorsExtraPanel
-        ichimoku={result.indicators.ichimoku}
-        price={result.indicators.price}
-        fib={result.fibonacci}
-      />
+      {section === "entry" && <>
+        <EntrySetupPanel result={result} />
+        <EntryTiming indicators={result.indicators} />
+      </>}
 
-      {result.risk && (
-        <RiskPanel
-          risk={result.risk}
-          price={result.indicators.price}
-          atr={result.indicators.atr}
-        />
-      )}
-
-      <EntryTiming indicators={result.indicators} />
+      <p className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/5 p-3 text-[11px] leading-relaxed text-warning">
+        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> Analyse en kansinschattingen zijn geen garantie op winst. Beperk altijd je risico.
+      </p>
     </div>
   );
 }
@@ -1048,11 +1085,12 @@ function AlertsPanel({
 
 /* ---------------- Shared bits ---------------- */
 
-function SignalBadge({ signal, confidence }: { signal: "BUY" | "SELL" | "HOLD"; confidence: number }) {
+function SignalBadge({ signal, confidence }: { signal: "BUY" | "SELL" | "HOLD" | "NO_TRADE"; confidence: number }) {
   const map = {
     BUY: { label: "KOOP", cls: "bg-accent text-accent-foreground", icon: <TrendingUp className="h-4 w-4" /> },
     SELL: { label: "VERKOOP", cls: "bg-destructive text-destructive-foreground", icon: <TrendingDown className="h-4 w-4" /> },
     HOLD: { label: "HOUDEN", cls: "bg-secondary text-secondary-foreground", icon: <Activity className="h-4 w-4" /> },
+    NO_TRADE: { label: "GEEN TRADE", cls: "bg-warning text-background", icon: <AlertTriangle className="h-4 w-4" /> },
   };
   const c = map[signal] ?? map.HOLD;
   return (
