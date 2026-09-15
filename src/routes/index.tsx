@@ -389,16 +389,17 @@ function TradePlanPanel({ result }: { result: AnalyzeResult }) {
       <Card className="border-border/70 bg-card p-4 sm:p-5">
         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-border pb-4">
           <div className="min-w-0"><p className="text-[10px] font-bold uppercase text-muted-foreground">Handelsplan (kwantitatief)</p><div className={`mt-1 inline-flex rounded-md border px-3 py-1.5 text-2xl font-bold ${tone}`}>{plan.signal.replace("_", " ")}</div></div>
-          <div className="text-right"><p className="text-[10px] font-bold uppercase text-muted-foreground">Modelmatig</p><p className="text-2xl font-bold tabular-nums">{plan.confidence}%</p><p className="text-[10px] capitalize text-muted-foreground">Risico {plan.riskLevel}</p></div>
+          <div className="text-right"><p className="text-[10px] font-bold uppercase text-muted-foreground">Signaalsterkte</p><p className="text-2xl font-bold tabular-nums">{plan.confidence}%</p><p className="text-[10px] capitalize text-muted-foreground">Risico {plan.riskLevel}</p></div>
         </div>
         <p className="mt-3 text-xs text-muted-foreground">
-          Gemeten hit-rate (1 week):{" "}
+          Echt gemeten betrouwbaarheid (1 week):{" "}
           {measured ? (
-            <span className="font-semibold text-foreground">{measured.value.toFixed(0)}% over {measured.samples} metingen</span>
+            <span className="font-semibold text-foreground">{measured.value.toFixed(0)}% over {measured.samples} echte metingen <span className="font-normal text-muted-foreground">(voorzichtige band {measured.lower.toFixed(0)}–{measured.upper.toFixed(0)}%)</span></span>
           ) : (
-            <span className="font-semibold text-warning">onvoldoende data (min. {MIN_SAMPLES} metingen)</span>
+            <span className="font-semibold text-warning">onvoldoende data (min. {MIN_SAMPLES} echte metingen)</span>
           )}
         </p>
+        <p className="mt-1 text-[10px] text-muted-foreground">Te late controles worden bewust overgeslagen, zodat een +1u voorspelling niet met de koers van de volgende dag wordt beoordeeld.</p>
         {plan.eventRisk && <p className="mt-4 flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 p-2 text-xs text-warning"><AlertTriangle className="h-4 w-4" />{plan.eventRisk}</p>}
         {plan.noTradeReasons.length > 0 && (
           <div className="mt-4 rounded-md border border-warning/40 bg-warning/5 p-3">
@@ -834,11 +835,14 @@ function PortfolioPanel({
   currentResult: AnalyzeResult | null;
   onOpen: (s: string, m: Market) => void;
 }) {
-  const { portfolio } = useStore();
+  const { portfolio, history } = useStore();
   const [qty, setQty] = useState("");
   const [avg, setAvg] = useState("");
+  const [fees, setFees] = useState("0");
+  const [openedAt, setOpenedAt] = useState(() => new Date().toISOString().slice(0, 10));
   const [prices, setPrices] = useState<Record<string, number>>({});
   const [refreshing, setRefreshing] = useState(false);
+  const [status, setStatus] = useState("");
   const analyze = useServerFn(analyzeAsset);
 
   useEffect(() => {
@@ -850,24 +854,49 @@ function PortfolioPanel({
     }
   }, [currentResult]);
 
+  const existingCurrent = currentResult
+    ? portfolio.find(
+        (p) =>
+          p.market === currentResult.market &&
+          p.symbol.toLowerCase() === currentResult.symbol.toLowerCase(),
+      )
+    : null;
+
   const add = (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentResult || !qty || !avg) return;
+    const q = Number(qty);
+    const px = Number(avg);
+    const f = Number(fees) || 0;
+    if (!(q > 0) || !(px >= 0) || f < 0) return;
+
     store.addPosition({
       symbol: currentResult.symbol,
       market: currentResult.market,
-      quantity: Number(qty),
-      avgPrice: Number(avg),
+      quantity: q,
+      avgPrice: px,
+      feesPaid: f,
+      openedAt: new Date(`${openedAt}T12:00:00`).getTime(),
     });
+
+    setStatus(
+      existingCurrent
+        ? `${currentResult.symbol}: bijkoop verwerkt en gemiddelde aankoopprijs opnieuw berekend.`
+        : `${currentResult.symbol}: positie toegevoegd.`,
+    );
     setQty("");
     setAvg("");
+    setFees("0");
   };
 
   const refreshAll = async () => {
     if (!portfolio.length) return;
     setRefreshing(true);
     const unique = new Map<string, { symbol: string; market: Market }>();
-    for (const p of portfolio) unique.set(`${p.market}:${p.symbol}`, { symbol: p.symbol, market: p.market });
+    for (const p of portfolio) {
+      unique.set(`${p.market}:${p.symbol}`, { symbol: p.symbol, market: p.market });
+    }
+
     const updates: Record<string, number> = {};
     await Promise.all(
       [...unique.values()].map(async (u) => {
@@ -881,108 +910,334 @@ function PortfolioPanel({
     setRefreshing(false);
   };
 
+  const buyMore = (p: (typeof portfolio)[number]) => {
+    const cur = prices[`${p.market}:${p.symbol}`] ?? p.avgPrice;
+    const q = Number(window.prompt(`Hoeveel ${p.symbol} bijkopen?`, "1") ?? "");
+    if (!(q > 0)) return;
+    const px = Number(window.prompt("Aankoopprijs per stuk", cur.toFixed(4)) ?? "");
+    if (!(px >= 0)) return;
+    const fee = Number(window.prompt("Transactiekosten (€)", "0") ?? "0");
+    if (!(fee >= 0)) return;
+    store.buyMore(p.id, q, px, fee);
+    setStatus(`${p.symbol}: bijkoop verwerkt.`);
+  };
+
+  const edit = (p: (typeof portfolio)[number]) => {
+    const q = Number(window.prompt("Nieuw aantal", String(p.quantity)) ?? "");
+    if (!(q > 0)) return;
+    const px = Number(window.prompt("Nieuwe gemiddelde aankoopprijs", String(p.avgPrice)) ?? "");
+    if (!(px >= 0)) return;
+    const fee = Number(window.prompt("Totale aankoopkosten (€)", String(p.feesPaid)) ?? "");
+    if (!(fee >= 0)) return;
+    store.editPosition(p.id, { quantity: q, avgPrice: px, feesPaid: fee });
+    setStatus(`${p.symbol}: positie gecorrigeerd.`);
+  };
+
+  const sell = (p: (typeof portfolio)[number]) => {
+    const cur = prices[`${p.market}:${p.symbol}`] ?? p.avgPrice;
+    const q = Number(window.prompt(`Hoeveel ${p.symbol} verkopen?`, String(p.quantity)) ?? "");
+    if (!(q > 0) || q > p.quantity) return;
+    const px = Number(window.prompt("Verkoopprijs per stuk", cur.toFixed(4)) ?? "");
+    if (!(px >= 0)) return;
+    const fee = Number(window.prompt("Verkoopkosten (€)", "0") ?? "0");
+    if (!(fee >= 0)) return;
+    store.sellPosition(p.id, q, px, fee);
+    setStatus(`${p.symbol}: verkoop opgeslagen in historie.`);
+  };
+
+  const hardDelete = (p: (typeof portfolio)[number]) => {
+    if (
+      window.confirm(
+        `${p.symbol} definitief verwijderen? Gebruik dit alleen bij een fout ingevoerde positie. Een echte verkoop hoort via 'Verkoop'.`,
+      )
+    ) {
+      store.removePosition(p.id);
+      setStatus(`${p.symbol}: foutieve positie verwijderd.`);
+    }
+  };
+
   const totals = useMemo(() => {
-    let invested = 0, current = 0;
+    let invested = 0;
+    let current = 0;
+
     for (const p of portfolio) {
-      invested += p.quantity * p.avgPrice;
+      invested += p.quantity * p.avgPrice + p.feesPaid;
       const cur = prices[`${p.market}:${p.symbol}`];
       current += p.quantity * (cur ?? p.avgPrice);
     }
-    return { invested, current, pnl: current - invested, pnlPct: invested ? ((current - invested) / invested) * 100 : 0 };
-  }, [portfolio, prices]);
+
+    const unrealized = current - invested;
+    const realized = history.reduce((sum, h) => sum + h.realizedPnl, 0);
+
+    return {
+      invested,
+      current,
+      unrealized,
+      unrealizedPct: invested ? (unrealized / invested) * 100 : 0,
+      realized,
+      total: unrealized + realized,
+    };
+  }, [portfolio, history, prices]);
 
   return (
     <div className="space-y-6">
       {currentResult && (
         <Card className="border-border/60 bg-card p-5">
-          <h4 className="mb-3 text-lg font-semibold">Positie toevoegen ({currentResult.symbol})</h4>
-          <form onSubmit={add} className="grid gap-3 sm:grid-cols-3">
+          <div className="mb-3">
+            <h4 className="text-lg font-semibold">
+              {existingCurrent ? `Bijkopen (${currentResult.symbol})` : `Positie toevoegen (${currentResult.symbol})`}
+            </h4>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {existingCurrent
+                ? `Je bezit al ${existingCurrent.quantity} stuks. Nieuwe aankoop wordt automatisch in de gemiddelde aankoopprijs verwerkt.`
+                : "Geschikt om je bestaande bunq-positie handmatig over te nemen."}
+            </p>
+          </div>
+
+          <form onSubmit={add} className="grid gap-3 sm:grid-cols-4">
             <div>
               <label className="text-xs text-muted-foreground">Aantal</label>
-              <Input type="number" step="any" min={0} value={qty} onChange={(e) => setQty(e.target.value)} placeholder="bv. 10" required />
+              <Input
+                type="number"
+                step="any"
+                min={0}
+                value={qty}
+                onChange={(e) => setQty(e.target.value)}
+                placeholder="bv. 0.25"
+                required
+              />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground">Gem. aankoopprijs (€)</label>
-              <Input type="number" step="any" min={0} value={avg} onChange={(e) => setAvg(e.target.value)} placeholder={currentResult.indicators.price.toFixed(2)} required />
+              <label className="text-xs text-muted-foreground">Aankoopprijs per stuk (€)</label>
+              <Input
+                type="number"
+                step="any"
+                min={0}
+                value={avg}
+                onChange={(e) => setAvg(e.target.value)}
+                placeholder={currentResult.indicators.price.toFixed(2)}
+                required
+              />
             </div>
-            <div className="flex items-end">
-              <Button type="submit" className="w-full"><Plus className="mr-1 h-4 w-4" /> Toevoegen</Button>
+            <div>
+              <label className="text-xs text-muted-foreground">Kosten (€)</label>
+              <Input
+                type="number"
+                step="any"
+                min={0}
+                value={fees}
+                onChange={(e) => setFees(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground">Aankoopdatum</label>
+              <Input
+                type="date"
+                value={openedAt}
+                onChange={(e) => setOpenedAt(e.target.value)}
+              />
+            </div>
+            <div className="sm:col-span-4">
+              <Button type="submit" className="w-full">
+                <Plus className="mr-1 h-4 w-4" />
+                {existingCurrent ? "Bijkoop verwerken" : "Toevoegen aan portfolio"}
+              </Button>
             </div>
           </form>
+
+          {status && (
+            <p className="mt-3 rounded-md border border-primary/30 bg-primary/5 p-2 text-xs text-muted-foreground">
+              {status}
+            </p>
+          )}
         </Card>
       )}
 
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+        <Mini label="Actieve inleg" value={`€${totals.invested.toFixed(2)}`} />
+        <Mini label="Huidige waarde" value={`€${totals.current.toFixed(2)}`} />
+        <Mini
+          label="Ongerealiseerd"
+          value={`${totals.unrealized >= 0 ? "+" : ""}€${totals.unrealized.toFixed(2)} (${totals.unrealizedPct.toFixed(1)}%)`}
+        />
+        <Mini
+          label="Gerealiseerd"
+          value={`${totals.realized >= 0 ? "+" : ""}€${totals.realized.toFixed(2)}`}
+        />
+        <Mini
+          label="Totaal resultaat"
+          value={`${totals.total >= 0 ? "+" : ""}€${totals.total.toFixed(2)}`}
+        />
+      </div>
+
       <Card className="border-border/60 bg-card p-5">
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4 flex items-center justify-between gap-3">
           <div>
-            <h4 className="text-lg font-semibold">Portfolio</h4>
+            <h4 className="text-lg font-semibold">Actieve posities</h4>
             <p className="text-xs text-muted-foreground">{portfolio.length} posities</p>
           </div>
-          <Button size="sm" variant="outline" onClick={refreshAll} disabled={refreshing || !portfolio.length}>
-            {refreshing ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={refreshAll}
+            disabled={refreshing || !portfolio.length}
+          >
+            {refreshing ? (
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-1 h-3.5 w-3.5" />
+            )}
             Vernieuw prijzen
           </Button>
         </div>
 
         {portfolio.length === 0 ? (
-          <EmptyHint text="Geen posities. Analyseer een symbool en voeg het toe." />
+          <EmptyHint text="Geen actieve posities. Analyseer een aandeel en voeg je bunq-positie toe." />
         ) : (
-          <>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border/60 text-left text-xs uppercase tracking-wider text-muted-foreground">
-                    <th className="py-2 pr-3 font-medium">Symbool</th>
-                    <th className="py-2 px-3 text-right font-medium">Aantal</th>
-                    <th className="py-2 px-3 text-right font-medium">Gem. prijs</th>
-                    <th className="py-2 px-3 text-right font-medium">Huidig</th>
-                    <th className="py-2 px-3 text-right font-medium">Waarde</th>
-                    <th className="py-2 px-3 text-right font-medium">P&L</th>
-                    <th className="py-2 pl-3" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {portfolio.map((p) => {
-                    const cur = prices[`${p.market}:${p.symbol}`];
-                    const value = p.quantity * (cur ?? p.avgPrice);
-                    const invested = p.quantity * p.avgPrice;
-                    const pnl = value - invested;
-                    const pnlPct = invested ? (pnl / invested) * 100 : 0;
-                    return (
-                      <tr key={p.id} className="border-b border-border/40 last:border-0">
-                        <td className="py-2 pr-3">
-                          <button className="font-medium hover:underline" onClick={() => onOpen(p.symbol, p.market)}>
-                            {p.symbol}
-                          </button>
-                          <div className="text-[10px] uppercase text-muted-foreground">{p.market}</div>
-                        </td>
-                        <td className="py-2 px-3 text-right tabular-nums">{p.quantity}</td>
-                        <td className="py-2 px-3 text-right tabular-nums">€{p.avgPrice.toFixed(2)}</td>
-                        <td className="py-2 px-3 text-right tabular-nums">{cur != null ? `€${cur.toFixed(2)}` : "—"}</td>
-                        <td className="py-2 px-3 text-right tabular-nums">€{value.toFixed(2)}</td>
-                        <td className={`py-2 px-3 text-right tabular-nums ${pnl >= 0 ? "text-accent" : "text-destructive"}`}>
-                          {pnl >= 0 ? "+" : ""}€{pnl.toFixed(2)} ({pnlPct.toFixed(1)}%)
-                        </td>
-                        <td className="py-2 pl-3 text-right">
-                          <Button size="icon" variant="ghost" onClick={() => store.removePosition(p.id)}>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[900px] text-sm">
+              <thead>
+                <tr className="border-b border-border/60 text-left text-xs uppercase tracking-wider text-muted-foreground">
+                  <th className="py-2 pr-3 font-medium">Symbool</th>
+                  <th className="px-3 py-2 text-right font-medium">Aantal</th>
+                  <th className="px-3 py-2 text-right font-medium">Gem. prijs</th>
+                  <th className="px-3 py-2 text-right font-medium">Kosten</th>
+                  <th className="px-3 py-2 text-right font-medium">Huidig</th>
+                  <th className="px-3 py-2 text-right font-medium">Waarde</th>
+                  <th className="px-3 py-2 text-right font-medium">P&L</th>
+                  <th className="py-2 pl-3 font-medium">Acties</th>
+                </tr>
+              </thead>
+              <tbody>
+                {portfolio.map((p) => {
+                  const cur = prices[`${p.market}:${p.symbol}`];
+                  const value = p.quantity * (cur ?? p.avgPrice);
+                  const invested = p.quantity * p.avgPrice + p.feesPaid;
+                  const pnl = value - invested;
+                  const pnlPct = invested ? (pnl / invested) * 100 : 0;
+
+                  return (
+                    <tr key={p.id} className="border-b border-border/40 last:border-0">
+                      <td className="py-3 pr-3">
+                        <button
+                          className="font-medium hover:underline"
+                          onClick={() => onOpen(p.symbol, p.market)}
+                        >
+                          {p.symbol}
+                        </button>
+                        <div className="text-[10px] uppercase text-muted-foreground">
+                          {p.market} · sinds {new Date(p.openedAt).toLocaleDateString("nl-NL")}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums">{p.quantity}</td>
+                      <td className="px-3 py-3 text-right tabular-nums">€{p.avgPrice.toFixed(2)}</td>
+                      <td className="px-3 py-3 text-right tabular-nums">€{p.feesPaid.toFixed(2)}</td>
+                      <td className="px-3 py-3 text-right tabular-nums">
+                        {cur != null ? `€${cur.toFixed(2)}` : "—"}
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums">€{value.toFixed(2)}</td>
+                      <td
+                        className={`px-3 py-3 text-right tabular-nums ${
+                          pnl >= 0 ? "text-accent" : "text-destructive"
+                        }`}
+                      >
+                        {pnl >= 0 ? "+" : ""}€{pnl.toFixed(2)} ({pnlPct.toFixed(1)}%)
+                      </td>
+                      <td className="py-3 pl-3">
+                        <div className="flex flex-wrap gap-1">
+                          <Button size="sm" variant="secondary" onClick={() => buyMore(p)}>
+                            Bijkopen
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => sell(p)}>
+                            Verkopen
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => edit(p)}>
+                            Corrigeer
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => hardDelete(p)}
+                            title="Definitief verwijderen (alleen fout invoer)"
+                          >
                             <Trash2 className="h-4 w-4" />
                           </Button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  <tr className="bg-secondary/40 font-semibold">
-                    <td className="py-2 pr-3" colSpan={4}>Totaal</td>
-                    <td className="py-2 px-3 text-right tabular-nums">€{totals.current.toFixed(2)}</td>
-                    <td className={`py-2 px-3 text-right tabular-nums ${totals.pnl >= 0 ? "text-accent" : "text-destructive"}`}>
-                      {totals.pnl >= 0 ? "+" : ""}€{totals.pnl.toFixed(2)} ({totals.pnlPct.toFixed(1)}%)
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      <Card className="border-border/60 bg-card p-5">
+        <div className="mb-4">
+          <h4 className="text-lg font-semibold">Verkoophistorie</h4>
+          <p className="text-xs text-muted-foreground">
+            Echte verkopen blijven bewaard zodat gerealiseerde winst/verlies niet verdwijnt.
+          </p>
+        </div>
+
+        {history.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Nog geen verkopen opgeslagen.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-sm">
+              <thead>
+                <tr className="border-b border-border/60 text-left text-xs uppercase tracking-wider text-muted-foreground">
+                  <th className="py-2 pr-3 font-medium">Symbool</th>
+                  <th className="px-3 py-2 text-right font-medium">Aantal</th>
+                  <th className="px-3 py-2 text-right font-medium">Koop</th>
+                  <th className="px-3 py-2 text-right font-medium">Verkoop</th>
+                  <th className="px-3 py-2 text-right font-medium">Kosten</th>
+                  <th className="px-3 py-2 text-right font-medium">Resultaat</th>
+                  <th className="py-2 pl-3" />
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((h) => (
+                  <tr key={h.id} className="border-b border-border/40 last:border-0">
+                    <td className="py-3 pr-3">
+                      <div className="font-medium">{h.symbol}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        verkocht {new Date(h.closedAt).toLocaleDateString("nl-NL")}
+                      </div>
                     </td>
-                    <td />
+                    <td className="px-3 py-3 text-right tabular-nums">{h.quantity}</td>
+                    <td className="px-3 py-3 text-right tabular-nums">€{h.avgPrice.toFixed(2)}</td>
+                    <td className="px-3 py-3 text-right tabular-nums">€{h.exitPrice.toFixed(2)}</td>
+                    <td className="px-3 py-3 text-right tabular-nums">
+                      €{(h.entryFees + h.exitFees).toFixed(2)}
+                    </td>
+                    <td
+                      className={`px-3 py-3 text-right font-semibold tabular-nums ${
+                        h.realizedPnl >= 0 ? "text-accent" : "text-destructive"
+                      }`}
+                    >
+                      {h.realizedPnl >= 0 ? "+" : ""}€{h.realizedPnl.toFixed(2)}
+                    </td>
+                    <td className="py-3 pl-3 text-right">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        title="Alleen verwijderen bij foutieve historie"
+                        onClick={() => {
+                          if (window.confirm("Deze historische verkoop definitief verwijderen?")) {
+                            store.removeHistory(h.id);
+                          }
+                        }}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </td>
                   </tr>
-                </tbody>
-              </table>
-            </div>
-          </>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
     </div>
