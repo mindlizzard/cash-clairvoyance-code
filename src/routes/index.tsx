@@ -552,11 +552,14 @@ function AnalysePanel({
   const sections = [
     ["overview", "Overzicht"],
     ["hourly", "Uurprognose"],
-    ["plan", "AI Handelsplan"],
+    ["plan", "Handelsplan"],
     ["models", "Modellen"],
     ["montecarlo", "Monte Carlo"],
     ["risk", "Risico"],
     ["entry", "Instapmoment"],
+    ["accuracy", "Nauwkeurigheid"],
+    ["paper", "Paper trading"],
+    ["scanner", "Kansen"],
   ];
   const plan = result.tradePlan;
   const forecastAverage = (key: "day" | "week" | "month") =>
