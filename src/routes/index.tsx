@@ -1428,6 +1428,7 @@ function ForecastTable({
         <tbody>
           {forecasts.map((f) => {
             const a = accMap.get(f.model);
+            const w = weightMap.get(f.model);
             return (
             <tr key={f.model} className="border-b border-border/40 last:border-0">
               <td className="py-2 pr-3 font-medium">
