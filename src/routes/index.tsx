@@ -1908,3 +1908,222 @@ function RiskPanel({
     </Card>
   );
 }
+
+/* ---------------- Nauwkeurigheid (gemeten) ---------------- */
+
+function AccuracyPanel({ result }: { result: AnalyzeResult }) {
+  const [, bump] = useState(0);
+  useEffect(() => onAccuracyChange(() => bump((n) => n + 1)), []);
+  const summary = getHorizonSummary(result.symbol, result.market);
+  const stats = getModelStats(result.symbol, result.market);
+
+  return (
+    <div className="space-y-4">
+      <Card className="border-border/70 bg-card p-4 sm:p-5">
+        <h3 className="text-lg font-semibold">Gemeten nauwkeurigheid — {result.symbol}</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Elke analyse legt de voorspellingen vast. Zodra de horizon verstreken is, worden ze vergeleken met de echte koers. Onder {MIN_SAMPLES} metingen tonen we geen percentage.
+        </p>
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border/60 text-left text-xs uppercase tracking-wider text-muted-foreground">
+                <th className="py-2 pr-3 font-medium">Horizon</th>
+                <th className="py-2 px-3 text-right font-medium">Metingen</th>
+                <th className="py-2 px-3 text-right font-medium">Richting juist</th>
+                <th className="py-2 pl-3 text-right font-medium">Gem. fout</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summary.map((h) => (
+                <tr key={h.key} className="border-b border-border/40 last:border-0">
+                  <td className="py-2 pr-3 font-medium">{h.label}</td>
+                  <td className="py-2 px-3 text-right tabular-nums">{h.samples}</td>
+                  <td className="py-2 px-3 text-right tabular-nums">
+                    {h.sufficient && h.hitRate != null ? `${h.hitRate.toFixed(0)}%` : <span className="text-warning">onvoldoende data</span>}
+                  </td>
+                  <td className="py-2 pl-3 text-right tabular-nums">
+                    {h.sufficient && h.mae != null ? `${h.mae.toFixed(2)}%` : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <Card className="border-border/70 bg-card p-4 sm:p-5">
+        <h4 className="text-sm font-semibold">Per model</h4>
+        {stats.length === 0 ? (
+          <p className="mt-2 text-sm text-muted-foreground">
+            Nog geen metingen. Analyseer dit symbool regelmatig; na verloop van tijd verschijnen hier echte scores.
+          </p>
+        ) : (
+          <div className="mt-3 divide-y divide-border/40">
+            {stats.map((s) => (
+              <div key={s.model} className="flex items-center justify-between gap-3 py-2 text-sm">
+                <span className="min-w-0 truncate font-medium">{s.model}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {s.sufficient && s.hitRate != null && s.mae != null
+                    ? `${s.samples} metingen · hit ${s.hitRate.toFixed(0)}% · MAE ${s.mae.toFixed(1)}%`
+                    : `onvoldoende data (${s.samples}/${MIN_SAMPLES})`}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        <Button size="sm" variant="outline" className="mt-4" onClick={() => { clearForecastLog(); bump((n) => n + 1); }}>
+          <Trash2 className="mr-1 h-3.5 w-3.5" /> Metingen wissen
+        </Button>
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------- Paper trading ---------------- */
+
+function PaperPanel({ result }: { result: AnalyzeResult }) {
+  const trades = usePaperTrades();
+  const mine = trades.filter((t) => t.symbol === result.symbol && t.market === result.market);
+  const stats = paperStats(trades);
+  const fmt = (n: number | null, suffix = "%") => (n == null ? "—" : `${n >= 0 ? "" : ""}${n.toFixed(2)}${suffix}`);
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        <Stat label="Open posities" value={String(stats.open)} hint={`${stats.closed} afgesloten`} />
+        <Stat label="Win rate" value={stats.winRate == null ? "—" : `${stats.winRate.toFixed(0)}%`} tone={(stats.winRate ?? 0) >= 50 ? "up" : "down"} />
+        <Stat label="Profit factor" value={stats.profitFactor == null ? "—" : stats.profitFactor.toFixed(2)} />
+        <Stat label="Expectancy" value={fmt(stats.expectancyPct)} tone={(stats.expectancyPct ?? 0) >= 0 ? "up" : "down"} hint={`Totaal ${stats.totalReturnPct.toFixed(2)}% · max drawdown ${stats.maxDrawdownPct.toFixed(2)}%`} />
+      </div>
+
+      <Card className="border-border/70 bg-card p-4 sm:p-5">
+        <h4 className="text-sm font-semibold">Virtuele trades ({trades.length})</h4>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Open een paper trade via het handelsplan. Stop-loss en take profits worden bij elke analyse van hetzelfde symbool getoetst. Kosten en slippage worden meegerekend.
+        </p>
+        {trades.length === 0 ? (
+          <p className="mt-4 text-sm text-muted-foreground">Nog geen virtuele trades.</p>
+        ) : (
+          <div className="mt-3 divide-y divide-border/40">
+            {trades.slice().reverse().map((t) => (
+              <div key={t.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{t.symbol}</span>
+                    <Badge variant="secondary" className="text-[10px]">{t.direction === "long" ? "Long" : "Short"}</Badge>
+                    <Badge variant={t.status === "open" ? "outline" : "secondary"} className="text-[10px]">{t.status === "open" ? "Open" : t.exitReason}</Badge>
+                  </div>
+                  <div className="mt-1 text-[11px] text-muted-foreground">
+                    Entry €{t.entry.toFixed(2)} · stop €{t.stop.toFixed(2)} · TP1 €{t.tp1.toFixed(2)} · {t.quantity >= 1 ? t.quantity.toFixed(0) : t.quantity.toFixed(4)} stuks
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Beste +{t.maxFavorablePct.toFixed(2)}% · slechtste {t.maxAdversePct.toFixed(2)}%
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className={`text-sm font-bold tabular-nums ${(t.returnPct ?? 0) >= 0 ? "text-accent" : "text-destructive"}`}>
+                    {t.status === "closed" && t.returnPct != null ? `${t.returnPct >= 0 ? "+" : ""}${t.returnPct.toFixed(2)}%` : `€${t.lastPrice.toFixed(2)}`}
+                  </p>
+                  <div className="mt-1 flex justify-end gap-1">
+                    {t.status === "open" && t.symbol === result.symbol && t.market === result.market && (
+                      <Button size="sm" variant="secondary" onClick={() => closePaperTrade(t.id, result.indicators.price, "handmatig")}>
+                        Sluiten
+                      </Button>
+                    )}
+                    <Button size="sm" variant="ghost" onClick={() => removePaperTrade(t.id)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {mine.length === 0 && trades.length > 0 && (
+          <p className="mt-3 text-[11px] text-muted-foreground">Geen open trade voor {result.symbol}.</p>
+        )}
+      </Card>
+      <p className="text-[11px] text-muted-foreground">Paper trading is een simulatie zonder echte orders. Resultaten zeggen niets over toekomstige winst.</p>
+    </div>
+  );
+}
+
+/* ---------------- Opportunity scanner ---------------- */
+
+function ScannerPanel({ market }: { market: Market }) {
+  const { watchlist } = useStore();
+  const scan = useServerFn(scanOpportunities);
+  const mutation = useMutation({
+    mutationFn: (symbols: string[]) => scan({ data: { market, symbols } }),
+  });
+
+  const symbols = Array.from(
+    new Set([
+      ...PRESETS[market].map((p) => p.symbol),
+      ...watchlist.filter((w) => w.market === market).map((w) => w.symbol),
+    ]),
+  ).slice(0, 12);
+
+  const rows = mutation.data?.rows ?? [];
+  const tradable = rows.filter((r) => r.signal !== "NO_TRADE" && r.sufficientData);
+
+  return (
+    <div className="space-y-4">
+      <Card className="border-border/70 bg-card p-4 sm:p-5">
+        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+          <div>
+            <h3 className="text-lg font-semibold">Top kansen vandaag</h3>
+            <p className="text-xs text-muted-foreground">
+              Scant {symbols.length} {market === "stock" ? "aandelen/ETF's" : "crypto's"} (presets + watchlist) op verwachte edge, modelovereenstemming en risk/reward.
+            </p>
+          </div>
+          <Button onClick={() => mutation.mutate(symbols)} disabled={mutation.isPending}>
+            {mutation.isPending ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Scannen…</> : <><Layers className="mr-2 h-4 w-4" /> Scan nu</>}
+          </Button>
+        </div>
+        {mutation.data && (
+          <p className="mt-3 text-[11px] text-muted-foreground">
+            {mutation.data.analysed} van {mutation.data.requested} symbolen met voldoende historie · {tradable.length} met een bruikbare setup ·{" "}
+            {new Date(mutation.data.scannedAt).toLocaleTimeString("nl-NL")}
+          </p>
+        )}
+      </Card>
+
+      {rows.length > 0 && (
+        <Card className="border-border/70 bg-card p-4 sm:p-5">
+          {tradable.length === 0 && (
+            <p className="mb-3 rounded-md border border-warning/40 bg-warning/5 p-3 text-xs text-warning">
+              Geen enkele setup haalt de drempel. Niets doen is nu de conservatieve keuze.
+            </p>
+          )}
+          <div className="divide-y divide-border/40">
+            {rows.map((r) => (
+              <div key={r.symbol} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{r.symbol}</span>
+                    <Badge
+                      variant="outline"
+                      className={`text-[10px] ${r.signal === "BUY" ? "border-accent/40 text-accent" : r.signal === "SELL" ? "border-destructive/40 text-destructive" : "border-border text-muted-foreground"}`}
+                    >
+                      {r.signal.replace("_", " ")}
+                    </Badge>
+                    {!r.sufficientData && <span className="text-[10px] text-warning">weinig historie</span>}
+                  </div>
+                  <p className="mt-1 text-[11px] text-muted-foreground">{r.reason}</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Edge {r.edgePct.toFixed(2)}% · kosten {r.costPct.toFixed(2)}% · overeenstemming {r.agreement}% · ATR {r.atrPct.toFixed(1)}%
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-bold tabular-nums">{r.score.toFixed(0)}</p>
+                  <p className="text-[10px] uppercase text-muted-foreground">score</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+      <p className="text-[11px] text-muted-foreground">Een hoge score betekent alleen een relatief betere verhouding tussen verwachte beweging, onzekerheid en kosten — geen garantie op winst.</p>
+    </div>
+  );
+}
