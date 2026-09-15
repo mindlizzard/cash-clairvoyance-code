@@ -126,6 +126,20 @@ function IntradayPage() {
       </header>
 
       <main className="mx-auto max-w-6xl space-y-6 px-5 py-7">
+        <div className="inline-flex rounded-lg border border-border/60 bg-secondary p-1">
+          <Link
+            to="/"
+            className="inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground transition hover:bg-background/60 hover:text-foreground"
+          >
+            <Activity className="mr-1.5 h-3.5 w-3.5" />
+            Overzicht
+          </Link>
+          <span className="inline-flex items-center rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground shadow">
+            <Clock3 className="mr-1.5 h-3.5 w-3.5" />
+            Uurprognose
+          </span>
+        </div>
+
         <section>
           <div className="mb-2 flex items-center gap-2 text-sm font-medium text-primary">
             <Clock3 className="h-4 w-4" /> Korte termijn

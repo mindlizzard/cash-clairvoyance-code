@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useMemo, useState } from "react";
@@ -33,6 +33,7 @@ import {
   Shield,
   Target,
   Layers,
+  Clock3,
 } from "lucide-react";
 import { analyzeAsset } from "@/lib/analyze.functions";
 import { fetchNews } from "@/lib/news.functions";
@@ -261,6 +262,19 @@ function Home() {
           </TabsList>
 
           <TabsContent value="analyse" className="mt-6">
+            <div className="mb-5 inline-flex rounded-lg border border-border/60 bg-secondary p-1">
+              <span className="inline-flex items-center rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground shadow">
+                <Activity className="mr-1.5 h-3.5 w-3.5" />
+                Overzicht
+              </span>
+              <Link
+                to="/uurprognose"
+                className="inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground transition hover:bg-background/60 hover:text-foreground"
+              >
+                <Clock3 className="mr-1.5 h-3.5 w-3.5" />
+                Uurprognose
+              </Link>
+            </div>
             {result ? (
               <AnalysePanel result={result} amount={amount} setAmount={setAmount} />
             ) : (
