@@ -145,6 +145,14 @@ async function fetchIntradayNasdaq(
           };
         });
       if (merged.length < 30) continue;
+      // Nasdaq geeft tijden in beurstijd (ET) alsof het UTC is; corrigeer met
+      // hele uren zodat de laatste candle net vóór nu ligt.
+      const lastT = merged[merged.length - 1].t;
+      const shiftHours = Math.round((Date.now() - lastT) / 3_600_000);
+      if (shiftHours > 0 && shiftHours <= 12) {
+        const delta = shiftHours * 3_600_000;
+        for (const m of merged) m.t += delta;
+      }
       return { candles: merged, intervalMinutes: 5, label: "5m (Nasdaq)" };
     } catch {
       // volgende assetclass
