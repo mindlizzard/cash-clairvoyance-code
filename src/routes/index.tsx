@@ -343,36 +343,141 @@ function Home() {
 
 function TradePlanPanel({ result }: { result: AnalyzeResult }) {
   const plan = result.tradePlan;
+  const ens = result.ensemble;
+  const [portfolio, setPortfolio] = useState("10000");
+  const [riskPct, setRiskPct] = useState(1);
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const explain = useServerFn(explainTradePlan);
+  const explainMutation = useMutation({
+    mutationFn: () =>
+      explain({
+        data: {
+          symbol: result.symbol,
+          facts: [
+            `Signaal ${plan.signal}, modelmatig vertrouwen ${plan.confidence}%.`,
+            `Verwachte beweging week ${ens.ensembleWeekPct}%, edge ${plan.edgePct}%, kosten ${plan.costPct}%.`,
+            `Modelovereenstemming ${plan.agreement}%. Kans omhoog ${plan.probabilityUp}%.`,
+            `Instapzone ${plan.entryLow}-${plan.entryHigh}, stop ${plan.stopLoss}, TP1 ${plan.takeProfit1}, TP2 ${plan.takeProfit2}, R/R 1:${plan.riskReward}.`,
+            plan.noTradeReasons.length ? `NO TRADE-redenen: ${plan.noTradeReasons.join(" ")}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        },
+      }),
+    onSuccess: (d) => setExplanation(d.ok ? d.text : "Uitleg is nu niet beschikbaar."),
+  });
+
+  const tradable = plan.signal === "BUY" || plan.signal === "SELL";
+  const size = positionSize({
+    portfolio: Number(portfolio) || 0,
+    riskPct,
+    entry: result.indicators.price,
+    stop: plan.stopLoss,
+  });
+
   const forecasts = [
     ["1 uur", result.hourlyForecasts.find((row) => row.hours === 1)?.expectedPct ?? 0],
     ["4 uur", result.hourlyForecasts.find((row) => row.hours === 4)?.expectedPct ?? 0],
     ["24 uur", result.hourlyForecasts.find((row) => row.hours === 24)?.expectedPct ?? 0],
-    ["1 week", result.ai.forecasts.length ? result.ai.forecasts.reduce((sum, row) => sum + row.week, 0) / result.ai.forecasts.length : 0],
+    ["1 week", ens.ensembleWeekPct],
   ] as const;
   const tone = plan.signal === "BUY" ? "text-accent border-accent/40 bg-accent/10" : plan.signal === "SELL" ? "text-destructive border-destructive/40 bg-destructive/10" : plan.signal === "NO_TRADE" ? "text-warning border-warning/40 bg-warning/10" : "text-primary border-primary/40 bg-primary/10";
+  const measured = measuredConfidence(result.symbol, result.market, "1w");
+
   return (
-    <Card className="border-border/70 bg-card p-4 sm:p-5">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-border pb-4">
-        <div className="min-w-0"><p className="text-[10px] font-bold uppercase text-muted-foreground">AI Handelsplan</p><div className={`mt-1 inline-flex rounded-md border px-3 py-1.5 text-2xl font-bold ${tone}`}>{plan.signal.replace("_", " ")}</div></div>
-        <div className="text-right"><p className="text-[10px] font-bold uppercase text-muted-foreground">Vertrouwen</p><p className="text-2xl font-bold tabular-nums">{plan.confidence}%</p><p className="text-[10px] capitalize text-muted-foreground">Risico {plan.riskLevel}</p></div>
-      </div>
-      {plan.eventRisk && <p className="mt-4 flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 p-2 text-xs text-warning"><AlertTriangle className="h-4 w-4" />{plan.eventRisk}</p>}
-      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {forecasts.map(([label, value]) => <Mini key={label} label={label} value={`${value >= 0 ? "+" : ""}${value.toFixed(2)}%`} />)}
-      </div>
-      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
-        <Mini label="Instapzone" value={`€${plan.entryLow.toFixed(2)} – €${plan.entryHigh.toFixed(2)}`} />
-        <Mini label="Stop-loss" value={`€${plan.stopLoss.toFixed(2)}`} />
-        <Mini label="Take profit 1" value={`€${plan.takeProfit1.toFixed(2)}`} />
-        <Mini label="Take profit 2" value={`€${plan.takeProfit2.toFixed(2)}`} />
-        <Mini label="Risk / reward" value={`1 : ${plan.riskReward.toFixed(2)}`} />
-        <Mini label="Kans omhoog / omlaag" value={`${plan.probabilityUp}% / ${plan.probabilityDown}%`} />
-      </div>
-      <div className="mt-4 space-y-2">
-        {plan.reasons.map((reason, index) => <div key={reason} className="flex gap-3 text-sm"><span className="grid h-5 w-5 shrink-0 place-items-center rounded-sm bg-primary/10 text-[10px] font-bold text-primary">{index + 1}</span><p className="text-muted-foreground">{reason}</p></div>)}
-      </div>
-      <p className="mt-4 border-l-2 border-destructive pl-3 text-xs text-muted-foreground"><strong className="text-foreground">Invalidatie:</strong> {plan.invalidation}</p>
-    </Card>
+    <div className="space-y-4">
+      <Card className="border-border/70 bg-card p-4 sm:p-5">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-border pb-4">
+          <div className="min-w-0"><p className="text-[10px] font-bold uppercase text-muted-foreground">Handelsplan (kwantitatief)</p><div className={`mt-1 inline-flex rounded-md border px-3 py-1.5 text-2xl font-bold ${tone}`}>{plan.signal.replace("_", " ")}</div></div>
+          <div className="text-right"><p className="text-[10px] font-bold uppercase text-muted-foreground">Modelmatig</p><p className="text-2xl font-bold tabular-nums">{plan.confidence}%</p><p className="text-[10px] capitalize text-muted-foreground">Risico {plan.riskLevel}</p></div>
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Gemeten hit-rate (1 week):{" "}
+          {measured ? (
+            <span className="font-semibold text-foreground">{measured.value.toFixed(0)}% over {measured.samples} metingen</span>
+          ) : (
+            <span className="font-semibold text-warning">onvoldoende data (min. {MIN_SAMPLES} metingen)</span>
+          )}
+        </p>
+        {plan.eventRisk && <p className="mt-4 flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 p-2 text-xs text-warning"><AlertTriangle className="h-4 w-4" />{plan.eventRisk}</p>}
+        {plan.noTradeReasons.length > 0 && (
+          <div className="mt-4 rounded-md border border-warning/40 bg-warning/5 p-3">
+            <p className="text-[10px] font-bold uppercase text-warning">Waarom niet handelen</p>
+            <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+              {plan.noTradeReasons.map((r) => <li key={r}>• {r}</li>)}
+            </ul>
+          </div>
+        )}
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {forecasts.map(([label, value]) => <Mini key={label} label={label} value={`${value >= 0 ? "+" : ""}${value.toFixed(2)}%`} />)}
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <Mini label="Instapzone" value={`€${plan.entryLow.toFixed(2)} – €${plan.entryHigh.toFixed(2)}`} />
+          <Mini label="Stop-loss" value={`€${plan.stopLoss.toFixed(2)}`} />
+          <Mini label="Take profit 1" value={`€${plan.takeProfit1.toFixed(2)}`} />
+          <Mini label="Take profit 2" value={`€${plan.takeProfit2.toFixed(2)}`} />
+          <Mini label="Risk / reward" value={`1 : ${plan.riskReward.toFixed(2)}`} />
+          <Mini label="Kans omhoog / omlaag" value={`${plan.probabilityUp}% / ${plan.probabilityDown}%`} />
+          <Mini label="Verwachte edge" value={`${plan.edgePct.toFixed(2)}%`} />
+          <Mini label="Kosten + spread" value={`${plan.costPct.toFixed(2)}%`} />
+          <Mini label="Modelovereenstemming" value={`${plan.agreement}%`} />
+        </div>
+        <div className="mt-4 space-y-2">
+          {plan.reasons.map((reason, index) => <div key={reason} className="flex gap-3 text-sm"><span className="grid h-5 w-5 shrink-0 place-items-center rounded-sm bg-primary/10 text-[10px] font-bold text-primary">{index + 1}</span><p className="text-muted-foreground">{reason}</p></div>)}
+        </div>
+        <p className="mt-4 border-l-2 border-destructive pl-3 text-xs text-muted-foreground"><strong className="text-foreground">Invalidatie:</strong> {plan.invalidation}</p>
+        <div className="mt-4">
+          <Button size="sm" variant="outline" onClick={() => explainMutation.mutate()} disabled={explainMutation.isPending}>
+            {explainMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+            Plan in gewone taal
+          </Button>
+          {explanation && <p className="mt-3 rounded-md border border-border bg-background/50 p-3 text-xs leading-relaxed text-muted-foreground">{explanation}</p>}
+        </div>
+      </Card>
+
+      <Card className="border-border/70 bg-card p-4 sm:p-5">
+        <h4 className="text-sm font-semibold">Positie-sizing</h4>
+        <p className="mt-1 text-xs text-muted-foreground">Op basis van je instapprijs en stop-loss. Risicobeheer, geen winstverwachting.</p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Portefeuille €</span>
+            <Input type="number" min={0} value={portfolio} onChange={(e) => setPortfolio(e.target.value)} className="w-32" />
+          </div>
+          <div className="flex gap-2">
+            {[0.5, 1, 2].map((p) => (
+              <Button key={p} size="sm" variant={riskPct === p ? "default" : "secondary"} onClick={() => setRiskPct(p)}>
+                {p}%
+              </Button>
+            ))}
+          </div>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <Mini label="Risico per trade" value={`€${size.riskAmount.toFixed(2)}`} />
+          <Mini label="Risico per stuk" value={`€${size.perUnit.toFixed(2)}`} />
+          <Mini label="Aantal stuks" value={size.quantity >= 1 ? size.quantity.toFixed(0) : size.quantity.toFixed(4)} />
+          <Mini label="Positiegrootte" value={`€${size.exposure.toFixed(0)} (${size.exposurePct.toFixed(0)}%)`} />
+        </div>
+        <Button
+          className="mt-4 w-full"
+          disabled={!tradable || size.quantity <= 0}
+          onClick={() => {
+            openPaperTrade({
+              symbol: result.symbol,
+              market: result.market,
+              direction: plan.signal === "SELL" ? "short" : "long",
+              entry: result.indicators.price,
+              stop: plan.stopLoss,
+              tp1: plan.takeProfit1,
+              tp2: plan.takeProfit2,
+              quantity: size.quantity,
+              costPct: plan.costPct,
+            });
+          }}
+        >
+          {tradable ? "Virtueel uitvoeren (paper trade)" : "Geen trade om uit te voeren"}
+        </Button>
+      </Card>
+    </div>
   );
 }
 
