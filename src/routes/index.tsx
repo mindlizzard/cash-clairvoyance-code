@@ -34,10 +34,31 @@ import {
   Target,
   Layers,
 } from "lucide-react";
-import { analyzeAsset } from "@/lib/analyze.functions";
+import { analyzeAsset, scanOpportunities, explainTradePlan } from "@/lib/analyze.functions";
 import { fetchNews } from "@/lib/news.functions";
 import { backtest, type Strategy } from "@/lib/backtest";
-import { logForecasts, scoreOpenForecasts, getModelStats, type ModelStats } from "@/lib/accuracy";
+import {
+  logForecasts,
+  scoreOpenForecasts,
+  getModelStats,
+  getEnsembleWeights,
+  getHorizonSummary,
+  measuredConfidence,
+  clearForecastLog,
+  onAccuracyChange,
+  MIN_SAMPLES,
+  type ModelStats,
+} from "@/lib/accuracy";
+import {
+  openPaperTrade,
+  closePaperTrade,
+  removePaperTrade,
+  updatePaperTrades,
+  usePaperTrades,
+  paperStats,
+  positionSize,
+} from "@/lib/paper";
+import { backtestPlan } from "@/lib/planbacktest";
 import {
   store,
   useStore,
@@ -131,21 +152,39 @@ function Home() {
     }
   }, [result, storeData.alerts]);
 
-  // Accuracy tracking: score oude voorspellingen tegen huidige prijs, log nieuwe
+  // Accuracy tracking: score oude voorspellingen, log nieuwe per model en horizon
   useEffect(() => {
     if (!result) return;
-    scoreOpenForecasts({
-      symbol: result.symbol,
-      market: result.market,
-      currentPrice: result.indicators.price,
-    });
+    const price = result.indicators.price;
+    scoreOpenForecasts({ symbol: result.symbol, market: result.market, currentPrice: price });
+    updatePaperTrades(result.symbol, result.market, price);
+    const hour = (h: number) =>
+      result.hourlyForecasts.find((row) => row.hours === h)?.expectedPct ?? 0;
     logForecasts({
       symbol: result.symbol,
       market: result.market,
-      price: result.indicators.price,
-      forecasts: result.ai.forecasts,
+      price,
+      entries: [
+        ...result.ai.forecasts.map((f) => ({
+          model: f.model,
+          predictions: [
+            { key: "24u" as const, predictedPct: f.day },
+            { key: "1w" as const, predictedPct: f.week },
+            { key: "1m" as const, predictedPct: f.month },
+          ],
+        })),
+        {
+          model: "Ensemble (handelsplan)",
+          predictions: [
+            { key: "1u" as const, predictedPct: hour(1) },
+            { key: "4u" as const, predictedPct: hour(4) },
+            { key: "24u" as const, predictedPct: hour(24) },
+            { key: "1w" as const, predictedPct: result.ensemble.ensembleWeekPct },
+          ],
+        },
+      ],
     });
-  }, [result?.symbol, result?.market]);
+  }, [result?.symbol, result?.market, result?.indicators.price]);
 
   const submit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -286,7 +325,7 @@ function Home() {
         </Tabs>
 
         <footer className="mt-12 border-t border-border/60 pt-6 text-center text-xs text-muted-foreground">
-          Koersdata: Yahoo Finance & CoinGecko. Nieuws: Yahoo. Analyse via Lovable AI. Lokale opslag (browser).
+          Koersdata: Yahoo Finance & CoinGecko. Nieuws: Yahoo. Signalen worden volledig kwantitatief berekend in de app; een taalmodel wordt alleen gebruikt om te vatten en voor nieuws-sentiment. Meting en opslag lokaal in je browser.
         </footer>
       </main>
       <div className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-background/95 px-2 pb-[max(0.55rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-xl sm:hidden">
