@@ -32,6 +32,7 @@ async function fetchIntradayStock(
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${a.range}&interval=${a.interval}`;
       const res = await fetch(url, { headers: YAHOO_HEADERS, signal: AbortSignal.timeout(7_000) });
+      console.log("[intraday]", a.interval, res.status);
       if (!res.ok) continue;
       const json: any = await res.json();
       const r = json?.chart?.result?.[0];
