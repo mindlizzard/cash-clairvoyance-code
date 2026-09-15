@@ -41,7 +41,7 @@ async function yahooJson(path: string): Promise<any | null> {
         signal: AbortSignal.timeout(7_000),
       });
       if (res.status === 429 || res.status >= 500) {
-        await sleep(400 * (attempt + 1));
+        await sleep(600 * (attempt + 1));
         continue;
       }
       if (!res.ok) return null;
