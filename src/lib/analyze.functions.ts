@@ -18,23 +18,60 @@ const YAHOO_HEADERS = {
   Accept: "application/json",
 };
 
-/** Echte intraday candles voor aandelen: 5m → 15m → 30m → 1h. */
+/**
+ * Korte in-memory cache: Yahoo geeft 429 (rate limit) bij snel opeenvolgende
+ * verzoeken. Intraday candles blijven 3 minuten geldig.
+ */
+const intradayCache = new Map<
+  string,
+  { at: number; value: { candles: IntradayCandle[]; intervalMinutes: number; label: string } | null }
+>();
+const INTRADAY_TTL_MS = 3 * 60_000;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Yahoo-verzoek met host-rotatie en backoff bij 429. */
+async function yahooJson(path: string): Promise<any | null> {
+  const hosts = ["query1", "query2"];
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const host = hosts[attempt % hosts.length];
+    try {
+      const res = await fetch(`https://${host}.finance.yahoo.com${path}`, {
+        headers: YAHOO_HEADERS,
+        signal: AbortSignal.timeout(7_000),
+      });
+      if (res.status === 429 || res.status >= 500) {
+        await sleep(400 * (attempt + 1));
+        continue;
+      }
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      await sleep(250);
+    }
+  }
+  return null;
+}
+
+/** Echte intraday candles voor aandelen: 15m → 30m → 1h → 5m. */
 async function fetchIntradayStock(
   symbol: string,
 ): Promise<{ candles: IntradayCandle[]; intervalMinutes: number; label: string } | null> {
+  const cached = intradayCache.get(`s:${symbol}`);
+  if (cached && Date.now() - cached.at < INTRADAY_TTL_MS) return cached.value;
+
   const attempts: { interval: string; range: string; minutes: number }[] = [
-    { interval: "5m", range: "5d", minutes: 5 },
     { interval: "15m", range: "1mo", minutes: 15 },
     { interval: "30m", range: "1mo", minutes: 30 },
     { interval: "1h", range: "3mo", minutes: 60 },
+    { interval: "5m", range: "5d", minutes: 5 },
   ];
   for (const a of attempts) {
     try {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${a.range}&interval=${a.interval}`;
-      const res = await fetch(url, { headers: YAHOO_HEADERS, signal: AbortSignal.timeout(7_000) });
-      console.log("[intraday]", a.interval, res.status);
-      if (!res.ok) continue;
-      const json: any = await res.json();
+      const json: any = await yahooJson(
+        `/v8/finance/chart/${encodeURIComponent(symbol)}?range=${a.range}&interval=${a.interval}`,
+      );
+      if (!json) continue;
       const r = json?.chart?.result?.[0];
       const ts: number[] = r?.timestamp ?? [];
       const q = r?.indicators?.quote?.[0] ?? {};
