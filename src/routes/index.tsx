@@ -1183,7 +1183,7 @@ function BacktestPanel({ result }: { result: AnalyzeResult | null }) {
       </Card>
 
       <p className="text-[11px] text-muted-foreground">
-        Backtest gebruikt dagelijkse slotkoersen van de afgelopen periode. Geen handelskosten of slippage. Resultaten uit het verleden geven geen garantie voor de toekomst.
+        De losse indicator-strategieën hierboven rekenen zonder kosten of slippage; de plan-backtest bovenaan doet dat wél. Resultaten uit het verleden geven geen garantie voor de toekomst.
       </p>
     </div>
   );
