@@ -89,11 +89,16 @@ async function fetchIntradayStock(
           v: num(q.volume?.[i]),
         });
       }
-      if (rows.length >= 40) return { candles: rows, intervalMinutes: a.minutes, label: a.interval };
+      if (rows.length >= 40) {
+        const value = { candles: rows, intervalMinutes: a.minutes, label: a.interval };
+        intradayCache.set(`s:${symbol}`, { at: Date.now(), value });
+        return value;
+      }
     } catch {
       // volgende interval proberen
     }
   }
+  intradayCache.set(`s:${symbol}`, { at: Date.now(), value: null });
   return null;
 }
 
@@ -101,6 +106,8 @@ async function fetchIntradayStock(
 async function fetchIntradayCrypto(
   id: string,
 ): Promise<{ candles: IntradayCandle[]; intervalMinutes: number; label: string } | null> {
+  const cached = intradayCache.get(`c:${id}`);
+  if (cached && Date.now() - cached.at < INTRADAY_TTL_MS) return cached.value;
   for (const days of [1, 7]) {
     try {
       const url = `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(id)}/market_chart?vs_currency=eur&days=${days}`;
