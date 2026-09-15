@@ -745,6 +745,12 @@ function AnalysePanel({
         <EntryTiming indicators={result.indicators} />
       </>}
 
+      {section === "accuracy" && <AccuracyPanel result={result} />}
+
+      {section === "paper" && <PaperPanel result={result} />}
+
+      {section === "scanner" && <ScannerPanel market={result.market} />}
+
       <p className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/5 p-3 text-[11px] leading-relaxed text-warning">
         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> Analyse en kansinschattingen zijn geen garantie op winst. Beperk altijd je risico.
       </p>
