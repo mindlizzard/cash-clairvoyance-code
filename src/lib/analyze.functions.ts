@@ -1,6 +1,89 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { simulateAllHorizons } from "./montecarlo";
+import {
+  buildIntradayContext,
+  dailyFallbackForecasts,
+  intradayForecasts,
+  normCdf,
+  type IntradayCandle,
+} from "./intraday";
+
+/** Transactiekosten + slippage per trade (heen en terug), in procenten. */
+const ROUNDTRIP_COST_PCT = { stock: 0.2, crypto: 0.5 } as const;
+
+const YAHOO_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+  Accept: "application/json",
+};
+
+/** Echte intraday candles voor aandelen: 5m → 15m → 30m → 1h. */
+async function fetchIntradayStock(
+  symbol: string,
+): Promise<{ candles: IntradayCandle[]; intervalMinutes: number; label: string } | null> {
+  const attempts: { interval: string; range: string; minutes: number }[] = [
+    { interval: "5m", range: "5d", minutes: 5 },
+    { interval: "15m", range: "1mo", minutes: 15 },
+    { interval: "30m", range: "1mo", minutes: 30 },
+    { interval: "1h", range: "3mo", minutes: 60 },
+  ];
+  for (const a of attempts) {
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${a.range}&interval=${a.interval}`;
+      const res = await fetch(url, { headers: YAHOO_HEADERS, signal: AbortSignal.timeout(7_000) });
+      if (!res.ok) continue;
+      const json: any = await res.json();
+      const r = json?.chart?.result?.[0];
+      const ts: number[] = r?.timestamp ?? [];
+      const q = r?.indicators?.quote?.[0] ?? {};
+      const rows: IntradayCandle[] = [];
+      for (let i = 0; i < ts.length; i++) {
+        const c = q.close?.[i];
+        if (typeof c !== "number" || !isFinite(c)) continue;
+        const num = (x: any) => (typeof x === "number" && isFinite(x) ? x : undefined);
+        rows.push({
+          t: ts[i] * 1000,
+          o: num(q.open?.[i]),
+          h: num(q.high?.[i]),
+          l: num(q.low?.[i]),
+          c,
+          v: num(q.volume?.[i]),
+        });
+      }
+      if (rows.length >= 40) return { candles: rows, intervalMinutes: a.minutes, label: a.interval };
+    } catch {
+      // volgende interval proberen
+    }
+  }
+  return null;
+}
+
+/** Intraday voor crypto via CoinGecko (5-minuten/uur granulariteit). */
+async function fetchIntradayCrypto(
+  id: string,
+): Promise<{ candles: IntradayCandle[]; intervalMinutes: number; label: string } | null> {
+  for (const days of [1, 7]) {
+    try {
+      const url = `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(id)}/market_chart?vs_currency=eur&days=${days}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(7_000) });
+      if (!res.ok) continue;
+      const json: any = await res.json();
+      const prices: [number, number][] = json?.prices ?? [];
+      const volumes: [number, number][] = json?.total_volumes ?? [];
+      if (prices.length < 40) continue;
+      const volMap = new Map(volumes.map(([t, v]) => [t, v]));
+      const rows: IntradayCandle[] = prices.map(([t, p]) => ({ t, c: p, v: volMap.get(t) }));
+      const spanMinutes =
+        (rows[rows.length - 1].t - rows[0].t) / 60_000 / Math.max(rows.length - 1, 1);
+      const intervalMinutes = Math.max(1, Math.round(spanMinutes));
+      return { candles: rows, intervalMinutes, label: `${intervalMinutes}m` };
+    } catch {
+      // volgende poging
+    }
+  }
+  return null;
+}
 
 const InputSchema = z.object({
   symbol: z.string().min(1).max(40),
@@ -619,12 +702,16 @@ export const analyzeAsset = createServerFn({ method: "POST" })
     const regime = detectRegime(closes, indicators.atrPct);
 
     // ---- Macro + earnings + sentiment (parallel) ----
-    const [macro, earningsIso, fng] = await Promise.all([
+    const [macro, earningsIso, fng, intradayRaw] = await Promise.all([
       fetchMacro().catch(() => ({
         vix: null, dxy: null, tnx: null, spxChangePct: null, btcChangePct: null,
       })),
       data.market === "stock" ? fetchEarningsDate(data.symbol.trim().toUpperCase().replace(/\./g, "-")) : Promise.resolve(null),
       data.market === "crypto" ? fetchCryptoFearGreed() : Promise.resolve(null),
+      (data.market === "stock"
+        ? fetchIntradayStock(data.symbol.trim().toUpperCase().replace(/\./g, "-"))
+        : fetchIntradayCrypto(data.symbol.trim().toLowerCase().replace(/\s+/g, "-"))
+      ).catch(() => null),
     ]);
 
     const earningsInDays = (() => {
@@ -742,10 +829,54 @@ export const analyzeAsset = createServerFn({ method: "POST" })
     ];
     ai.forecasts = heuristicForecasts;
 
+
+    // ---- Kwantitatief ensemble (het signaal komt uitsluitend hieruit) ----
+    const costPct = ROUNDTRIP_COST_PCT[data.market];
+    const weekSigmaPct = vol * Math.sqrt(5) * 100;
+    const daySigmaPct = vol * 100;
+
+    // Intraday model (echte 5m/15m/30m/1h candles indien beschikbaar)
+    const intradayCtx = intradayRaw
+      ? buildIntradayContext(intradayRaw.candles, intradayRaw.intervalMinutes)
+      : null;
+    const hourlyHorizons = intradayCtx
+      ? intradayForecasts(intradayCtx)
+      : dailyFallbackForecasts(price, drift, vol);
+    const hourAt = (h: number) => hourlyHorizons.find((row) => row.hours === h) ?? hourlyHorizons[0];
+    const h24 = hourAt(24);
+
+    if (intradayCtx) {
+      ai.forecasts = [
+        ...heuristicForecasts,
+        {
+          model: `Intraday (${intradayRaw?.label ?? "intraday"})`,
+          day: h24.expectedPct,
+          week: +(h24.expectedPct * 2.2).toFixed(2),
+          month: +(h24.expectedPct * 3.5).toFixed(2),
+          bandDay: h24.sigmaPct,
+          bandWeek: +(h24.sigmaPct * Math.sqrt(5)).toFixed(2),
+          bandMonth: +(h24.sigmaPct * Math.sqrt(21)).toFixed(2),
+        },
+      ];
+    }
+
+    const modelRows = ai.forecasts;
+    const ensembleDay = modelRows.length ? mean(modelRows.map((f) => f.day)) : mcBase.day.median;
+    const ensembleWeek = modelRows.length ? mean(modelRows.map((f) => f.week)) : mcBase.week.median;
+    const agreementRaw = modelRows.length
+      ? modelRows.filter((f) => Math.sign(f.week) === Math.sign(ensembleWeek)).length /
+        modelRows.length
+      : 0;
+    const agreement = +(agreementRaw * 100).toFixed(0);
+
+    // z-score: verwachte beweging ten opzichte van de onzekerheid
+    const zWeek = weekSigmaPct > 0 ? ensembleWeek / weekSigmaPct : 0;
+    const probUpWeek = +(normCdf(zWeek) * 100).toFixed(0);
+    const edgePct = Math.max(Math.abs(ensembleWeek), Math.abs(h24.expectedPct));
+
     // Risico-statistieken + sizing
     const risk = riskStats(rets);
     const ouHl = ouHalfLife(closes.slice(-180));
-    // Kelly-fractie (continuous): mu/sigma², gecapt op 25%
     const kelly = vol > 0 ? Math.max(0, Math.min(0.25, drift / (vol * vol))) : 0;
     const slLong = Math.max(0, price - 1.5 * atrVal);
     const tpLong = price + 2.5 * atrVal;
@@ -753,51 +884,72 @@ export const analyzeAsset = createServerFn({ method: "POST" })
     const tpShort = Math.max(0, price - 2.5 * atrVal);
     const riskReward = atrVal > 0 ? 2.5 / 1.5 : 0;
 
-    const score =
-      (trendDriftDay > 0 ? 1 : -1) +
-      (momentumDriftDay > 0 ? 1 : -1) +
-      (mcBase.week.probUp >= 55 ? 1 : mcBase.week.probUp <= 45 ? -1 : 0);
-    ai.signal = score >= 2 ? "BUY" : score <= -2 ? "SELL" : "HOLD";
-    ai.confidence = Math.min(82, 52 + Math.abs(score) * 10);
-    ai.shortTerm = `Het modelensemble verwacht ${mcBase.week.median >= 0 ? "opwaartse" : "neerwaartse"} druk met ${mcBase.week.probUp.toFixed(0)}% kans op winst in één week.`;
-    ai.reasoning = `Het ${regime}-regime, momentum en de Monte Carlo-verdeling vormen samen het hoofdsignaal.`;
-    ai.risks = `ATR is ${indicators.atrPct.toFixed(1)}% van de koers; onverwachte marktbewegingen blijven mogelijk.`;
+    const recent20 = candles.slice(-20);
+    const support = Math.min(
+      ...recent20.map((c) => c.low ?? c.close),
+      intradayCtx?.support ?? Infinity,
+    );
+    const resistance = Math.max(
+      ...recent20.map((c) => c.high ?? c.close),
+      intradayCtx?.resistance ?? -Infinity,
+    );
+
+    const eventRiskLabel =
+      earningsInDays != null && earningsInDays >= 0 && earningsInDays <= 7
+        ? `Earnings over ${earningsInDays} dagen`
+        : macro.vix != null && macro.vix >= 25
+          ? `VIX verhoogd (${macro.vix.toFixed(1)})`
+          : fng != null && (fng.value <= 20 || fng.value >= 80)
+            ? `Fear & Greed extreem (${fng.value})`
+            : null;
+    const highEventRisk = eventRiskLabel != null;
+
+    // ---- NO TRADE: alleen handelen als de edge de kosten en ruis overtreft ----
+    const noTradeReasons: string[] = [];
+    if (edgePct < costPct * 1.5) {
+      noTradeReasons.push(
+        `Verwachte beweging (${edgePct.toFixed(2)}%) is te klein tegenover kosten en spread (${costPct.toFixed(2)}%).`,
+      );
+    }
+    if (Math.abs(zWeek) < 0.3) {
+      noTradeReasons.push(
+        `Onzekerheid te groot: verwachte beweging is slechts ${Math.abs(zWeek).toFixed(2)}× de weekvolatiliteit.`,
+      );
+    }
+    if (agreementRaw < 0.6) {
+      noTradeReasons.push(`Modellen zijn oneens (slechts ${agreement}% dezelfde richting).`);
+    }
+    if (highEventRisk) noTradeReasons.push(`Verhoogd gebeurtenisrisico: ${eventRiskLabel}.`);
+    if (indicators.atrPct >= 9) {
+      noTradeReasons.push(`Volatiliteit extreem hoog (ATR ${indicators.atrPct.toFixed(1)}%).`);
+    }
+
+    if (noTradeReasons.length) ai.signal = "NO_TRADE";
+    else if (zWeek > 0.3) ai.signal = "BUY";
+    else if (zWeek < -0.3) ai.signal = "SELL";
+    else ai.signal = "HOLD";
+
+    // Modelmatige zekerheid: richting-z-score + modelovereenstemming, gecapt.
+    ai.confidence = Math.round(
+      Math.max(
+        5,
+        Math.min(
+          80,
+          40 + Math.min(Math.abs(zWeek), 1.5) * 18 + (agreementRaw - 0.5) * 30 -
+            (highEventRisk ? 10 : 0),
+        ),
+      ),
+    );
+    ai.shortTerm = `Het ensemble verwacht ${ensembleWeek >= 0 ? "opwaartse" : "neerwaartse"} druk van ${ensembleWeek.toFixed(2)}% over een week; ${probUpWeek}% kans op een positief resultaat.`;
+    ai.reasoning = `Signaal komt volledig uit de kwantitatieve modellen: trend, momentum, mean reversion, Monte Carlo${intradayCtx ? " en het intradaymodel" : ""}. Modelovereenstemming ${agreement}%.`;
+    ai.risks = `ATR is ${indicators.atrPct.toFixed(1)}% van de koers; kosten en slippage kosten ${costPct.toFixed(2)}% per trade.`;
 
     const allowedSignals = new Set(["BUY", "SELL", "HOLD", "NO_TRADE"]);
     if (!allowedSignals.has(ai.signal)) ai.signal = "HOLD";
-    ai.confidence = Math.max(0, Math.min(100, Number(ai.confidence) || 50));
-
-    const ensembleDay = ai.forecasts.length
-      ? mean(ai.forecasts.map((forecast) => forecast.day))
-      : mcBase.day.median;
-    const hourlyHorizons = [1, 2, 4, 8, 12, 24].map((hours) => {
-      const dayFraction = hours / 24;
-      const expectedPct = ensembleDay * dayFraction;
-      const bandPct = Math.max(0.05, vol * Math.sqrt(dayFraction) * 100);
-      const probabilityUp = Math.max(5, Math.min(95, 50 + (expectedPct / Math.max(bandPct, 0.01)) * 18));
-      return {
-        hours,
-        expectedPct: +expectedPct.toFixed(2),
-        expectedPrice: +(price * (1 + expectedPct / 100)).toFixed(4),
-        probabilityUp: +probabilityUp.toFixed(0),
-        low: +(price * (1 + (expectedPct - bandPct) / 100)).toFixed(4),
-        high: +(price * (1 + (expectedPct + bandPct) / 100)).toFixed(4),
-      };
-    });
-
-    const recent20 = candles.slice(-20);
-    const support = Math.min(...recent20.map((c) => c.low ?? c.close));
-    const resistance = Math.max(...recent20.map((c) => c.high ?? c.close));
-    const highEventRisk =
-      (earningsInDays != null && earningsInDays >= 0 && earningsInDays <= 7) ||
-      (macro.vix != null && macro.vix >= 25) ||
-      (fng != null && (fng.value <= 20 || fng.value >= 80));
-    const weakEdge = Math.abs(ensembleDay) < Math.max(0.08, vol * 25);
-    if (highEventRisk || (ai.confidence < 52 && weakEdge)) ai.signal = "NO_TRADE";
 
     const isShort = ai.signal === "SELL";
-    const entryLow = isShort ? price : Math.max(support, price - atrVal * 0.45);
-    const entryHigh = isShort ? Math.min(resistance, price + atrVal * 0.45) : price;
+    const entryLow = isShort ? price : Math.max(Math.min(support, price), price - atrVal * 0.45);
+    const entryHigh = isShort ? Math.min(Math.max(resistance, price), price + atrVal * 0.45) : price;
     const stopLoss = isShort ? price + atrVal * 1.5 : Math.max(0, price - atrVal * 1.5);
     const takeProfit1 = isShort ? Math.max(0, price - atrVal * 1.5) : price + atrVal * 1.5;
     const takeProfit2 = isShort ? Math.max(0, price - atrVal * 2.5) : price + atrVal * 2.5;
@@ -806,7 +958,10 @@ export const analyzeAsset = createServerFn({ method: "POST" })
     const tradePlan = {
       signal: ai.signal,
       confidence: Math.round(ai.confidence),
-      summary: ai.tradePlan?.summary || ai.shortTerm || (ai.signal === "NO_TRADE" ? "Onvoldoende voordeel tegenover het actuele risico; afwachten is rationeler." : "Het modelsignaal heeft voldoende technische bevestiging voor een gecontroleerde setup."),
+      summary:
+        ai.signal === "NO_TRADE"
+          ? `Geen trade: ${noTradeReasons[0]}`
+          : `${ai.signal === "SELL" ? "Neerwaarts" : ai.signal === "BUY" ? "Opwaarts" : "Neutraal"} signaal met ${edgePct.toFixed(2)}% verwachte beweging tegenover ${costPct.toFixed(2)}% kosten en ${agreement}% modelovereenstemming.`,
       riskLevel,
       entryLow: +Math.min(entryLow, entryHigh).toFixed(4),
       entryHigh: +Math.max(entryLow, entryHigh).toFixed(4),
@@ -814,21 +969,21 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       takeProfit1: +takeProfit1.toFixed(4),
       takeProfit2: +takeProfit2.toFixed(4),
       riskReward: +riskReward.toFixed(2),
-      probabilityUp: +mcBase.day.probUp.toFixed(0),
-      probabilityDown: +(100 - mcBase.day.probUp).toFixed(0),
-      invalidation: ai.tradePlan?.invalidation || (isShort ? `Setup ongeldig bij een dagslot boven ${resistance.toFixed(2)}.` : `Setup ongeldig bij een dagslot onder ${support.toFixed(2)}.`),
+      probabilityUp: probUpWeek,
+      probabilityDown: 100 - probUpWeek,
+      edgePct: +edgePct.toFixed(2),
+      costPct,
+      agreement,
+      noTradeReasons,
+      invalidation: isShort
+        ? `Setup ongeldig bij een dagslot boven ${resistance.toFixed(2)}.`
+        : `Setup ongeldig bij een dagslot onder ${support.toFixed(2)}.`,
       reasons: [
-        ai.tradePlan?.trendReason || `Trendregime: ${regime}; 90-daagse helling ${slopePctPerDay.toFixed(3)}% per dag.`,
-        ai.tradePlan?.momentumReason || `RSI ${indicators.rsi?.toFixed(0) ?? "n.v.t."} en MACD-histogram ${(indicators.macdHist ?? 0) >= 0 ? "positief" : "negatief"}.`,
-        ai.tradePlan?.riskReason || `ATR ${indicators.atrPct.toFixed(1)}% en VIX ${macro.vix?.toFixed(1) ?? "niet beschikbaar"}.`,
+        `Trend: regime ${regime}, 90-daagse helling ${slopePctPerDay.toFixed(3)}% per dag${intradayCtx ? `, intraday trendscore ${intradayCtx.trendScore.toFixed(2)}` : ""}.`,
+        `Momentum: RSI ${indicators.rsi?.toFixed(0) ?? "n.v.t."}, MACD-histogram ${(indicators.macdHist ?? 0) >= 0 ? "positief" : "negatief"}${intradayCtx?.vwap != null ? `, koers ${price >= intradayCtx.vwap ? "boven" : "onder"} intraday VWAP` : ""}.`,
+        `Risico: ATR ${indicators.atrPct.toFixed(1)}%, kosten ${costPct.toFixed(2)}%, VIX ${macro.vix?.toFixed(1) ?? "niet beschikbaar"}.`,
       ],
-      eventRisk: highEventRisk
-        ? earningsInDays != null && earningsInDays >= 0 && earningsInDays <= 7
-          ? `Earnings over ${earningsInDays} dagen`
-          : macro.vix != null && macro.vix >= 25
-            ? `VIX verhoogd (${macro.vix.toFixed(1)})`
-            : `Fear & Greed extreem (${fng?.value})`
-        : null,
+      eventRisk: eventRiskLabel,
     };
 
     const chart = candles.slice(-90).map((c, i) => {
@@ -846,6 +1001,28 @@ export const analyzeAsset = createServerFn({ method: "POST" })
 
     const history = candles.slice(-1250).map((c) => c.close);
 
+    // ---- Data-versheid ----
+    const now = new Date();
+    const marketOpen = (() => {
+      if (data.market === "crypto") return true;
+      const day = now.getUTCDay();
+      if (day === 0 || day === 6) return false;
+      const minutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+      return minutes >= 13 * 60 + 30 && minutes <= 20 * 60;
+    })();
+    const lastPriceAt =
+      intradayCtx?.lastAt ?? Date.parse(`${candles[candles.length - 1].date}T21:00:00Z`);
+    const ageMinutes = Math.max(0, Math.round((Date.now() - lastPriceAt) / 60_000));
+    const dataFreshness = {
+      lastPriceAt: new Date(lastPriceAt).toISOString(),
+      ageMinutes,
+      marketOpen,
+      intradayInterval: intradayRaw?.label ?? null,
+      intradaySamples: intradayCtx?.samples ?? 0,
+      stale: marketOpen ? ageMinutes > 45 : ageMinutes > 60 * 24 * 4,
+      source: data.market === "stock" ? "Yahoo Finance" : "CoinGecko",
+    };
+
     return {
       ok: true as const,
       symbol: data.symbol.toUpperCase(),
@@ -853,6 +1030,37 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       indicators,
       ai,
       tradePlan,
+      dataFreshness,
+      ensemble: {
+        agreement,
+        ensembleDayPct: +ensembleDay.toFixed(2),
+        ensembleWeekPct: +ensembleWeek.toFixed(2),
+        zWeek: +zWeek.toFixed(2),
+        edgePct: +edgePct.toFixed(2),
+        costPct,
+        probUpWeek,
+        weekSigmaPct: +weekSigmaPct.toFixed(2),
+        daySigmaPct: +daySigmaPct.toFixed(2),
+        noTradeReasons,
+        models: modelRows.map((f) => ({ model: f.model, day: f.day, week: f.week, month: f.month })),
+      },
+      intraday: intradayCtx
+        ? {
+            interval: intradayRaw?.label ?? `${intradayCtx.intervalMinutes}m`,
+            intervalMinutes: intradayCtx.intervalMinutes,
+            samples: intradayCtx.samples,
+            vwap: intradayCtx.vwap,
+            rsi: intradayCtx.rsi,
+            macdHist: intradayCtx.macdHist,
+            atrPct: +intradayCtx.atrPct.toFixed(2),
+            volumeRatio: intradayCtx.volumeRatio,
+            support: +intradayCtx.support.toFixed(4),
+            resistance: +intradayCtx.resistance.toFixed(4),
+            trendScore: +intradayCtx.trendScore.toFixed(2),
+            momentumScore: +intradayCtx.momentumScore.toFixed(2),
+            candles: intradayRaw!.candles.slice(-60).map((c) => ({ t: c.t, c: c.c })),
+          }
+        : null,
       hourlyForecasts: hourlyHorizons,
       levels: { support: +support.toFixed(4), resistance: +resistance.toFixed(4) },
       chart,
@@ -891,4 +1099,182 @@ export const analyzeAsset = createServerFn({ method: "POST" })
         short: { stop: +slShort.toFixed(4), target: +tpShort.toFixed(4) },
       },
     };
+  });
+
+/* ================= Opportunity Scanner ================= */
+
+const ScanSchema = z.object({
+  market: z.enum(["stock", "crypto"]),
+  symbols: z.array(z.string().min(1).max(40)).min(1).max(12),
+});
+
+export type ScanRow = {
+  symbol: string;
+  market: "stock" | "crypto";
+  price: number;
+  changePct: number;
+  signal: "BUY" | "SELL" | "HOLD" | "NO_TRADE";
+  edgePct: number;
+  confidence: number;
+  agreement: number;
+  riskReward: number;
+  atrPct: number;
+  costPct: number;
+  score: number;
+  reason: string;
+  sufficientData: boolean;
+};
+
+/**
+ * Scan een lijst symbolen en rangschik op verwachte edge, modelovereenstemming,
+ * risk/reward en volatiliteit. Alleen rijen met voldoende historie tellen mee.
+ */
+export const scanOpportunities = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) => ScanSchema.parse(d))
+  .handler(async ({ data }) => {
+    const costPct = ROUNDTRIP_COST_PCT[data.market];
+    const rows = await Promise.all(
+      data.symbols.map(async (raw): Promise<ScanRow | null> => {
+        try {
+          const candles =
+            data.market === "stock" ? await fetchStock(raw) : await fetchCrypto(raw);
+          if (candles.length < 120) return null;
+          const closes = candles.map((c) => c.close);
+          const last = closes.length - 1;
+          const price = closes[last];
+          const prev = closes[last - 1] ?? price;
+          const s20 = sma(closes, 20)[last];
+          const s50 = sma(closes, 50)[last];
+          const r = rsi(closes, 14)[last];
+          const m = macd(closes);
+          const atrVal = atr(candles, 14);
+          const atrPct = price > 0 ? (atrVal / price) * 100 : 0;
+          const rets = logReturns(closes);
+          const recent = rets.slice(-252);
+          const vol = ewmaVol(recent, 0.94) || stdev(recent);
+          const drift = mean(recent);
+          const slopePctPerDay = price > 0 ? (linRegSlope(closes.slice(-90)) / price) * 100 : 0;
+
+          const trendDrift =
+            (s20 != null && s50 != null ? (s20 - s50) / s50 / 60 : 0) +
+            (slopePctPerDay / 100) * 0.6;
+          const momentumDrift = mean(rets.slice(-5)) * 0.5;
+          const reversionDrift = r != null ? ((50 - r) / 50) * vol * 0.4 : 0;
+          const subModels = [trendDrift, momentumDrift, reversionDrift, drift];
+          const weekPcts = subModels.map((mu) => (Math.exp(mu * 5) - 1) * 100);
+          const ensembleWeek = mean(weekPcts);
+          const agreementRaw =
+            weekPcts.filter((x) => Math.sign(x) === Math.sign(ensembleWeek)).length /
+            weekPcts.length;
+          const weekSigmaPct = vol * Math.sqrt(5) * 100;
+          const z = weekSigmaPct > 0 ? ensembleWeek / weekSigmaPct : 0;
+          const edgePct = Math.abs(ensembleWeek);
+
+          let signal: ScanRow["signal"] = "HOLD";
+          let reason = "Geen duidelijke richting.";
+          if (edgePct < costPct * 1.5) {
+            signal = "NO_TRADE";
+            reason = "Verwachte beweging kleiner dan kosten en spread.";
+          } else if (Math.abs(z) < 0.3) {
+            signal = "NO_TRADE";
+            reason = "Onzekerheid groter dan de verwachte beweging.";
+          } else if (agreementRaw < 0.6) {
+            signal = "NO_TRADE";
+            reason = "Modellen zijn oneens over de richting.";
+          } else if (atrPct >= 9) {
+            signal = "NO_TRADE";
+            reason = "Volatiliteit extreem hoog.";
+          } else if (z > 0.3) {
+            signal = "BUY";
+            reason = `Opwaartse edge van ${edgePct.toFixed(2)}% met ${(agreementRaw * 100).toFixed(0)}% modelovereenstemming.`;
+          } else {
+            signal = "SELL";
+            reason = `Neerwaartse edge van ${edgePct.toFixed(2)}% met ${(agreementRaw * 100).toFixed(0)}% modelovereenstemming.`;
+          }
+
+          const confidence = Math.round(
+            Math.max(5, Math.min(80, 40 + Math.min(Math.abs(z), 1.5) * 18 + (agreementRaw - 0.5) * 30)),
+          );
+          const riskReward = atrVal > 0 ? 2.5 / 1.5 : 0;
+          const score =
+            signal === "NO_TRADE"
+              ? 0
+              : +(
+                  Math.min(Math.abs(z), 2) * 30 +
+                  agreementRaw * 30 +
+                  (confidence / 100) * 20 +
+                  Math.min(riskReward, 3) * 5 -
+                  Math.min(atrPct, 10) * 1.5
+                ).toFixed(1);
+
+          return {
+            symbol: raw.toUpperCase(),
+            market: data.market,
+            price: +price.toFixed(4),
+            changePct: +(((price - prev) / prev) * 100).toFixed(2),
+            signal,
+            edgePct: +edgePct.toFixed(2),
+            confidence,
+            agreement: +(agreementRaw * 100).toFixed(0),
+            riskReward: +riskReward.toFixed(2),
+            atrPct: +atrPct.toFixed(2),
+            costPct,
+            score,
+            reason,
+            sufficientData: closes.length >= 250,
+          };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    const ok = rows.filter((x): x is ScanRow => x != null);
+    return {
+      scannedAt: new Date().toISOString(),
+      requested: data.symbols.length,
+      analysed: ok.length,
+      rows: ok.sort((a, b) => b.score - a.score),
+    };
+  });
+
+/* ================= AI uitleglaag ================= */
+
+const ExplainSchema = z.object({
+  symbol: z.string().min(1).max(40),
+  facts: z.string().min(10).max(4000),
+});
+
+/**
+ * Taalmodel vat het reeds berekende plan samen. Het mag uitsluitend de
+ * meegegeven cijfers gebruiken en zelf niets verzinnen.
+ */
+export const explainTradePlan = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) => ExplainSchema.parse(d))
+  .handler(async ({ data }) => {
+    const apiKey = process.env["LOVABLE_API_KEY"];
+    if (!apiKey) return { ok: false as const, text: "" };
+    try {
+      const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        method: "POST",
+        signal: AbortSignal.timeout(12_000),
+        headers: { "Content-Type": "application/json", "Lovable-API-Key": apiKey },
+        body: JSON.stringify({
+          model: "google/gemini-2.5-flash",
+          messages: [
+            {
+              role: "system",
+              content:
+                "Je legt een bestaand, kwantitatief berekend handelsplan uit in het Nederlands. Gebruik UITSLUITEND de meegegeven cijfers. Verzin nooit koersen, koersdoelen, percentages of data. Maximaal 3 korte zinnen. Geen winstgaranties, geen beleggingsadvies.",
+            },
+            { role: "user", content: `Symbool ${data.symbol}. Berekende gegevens:\n${data.facts}` },
+          ],
+        }),
+      });
+      if (!res.ok) return { ok: false as const, text: "" };
+      const json: any = await res.json();
+      const text = String(json?.choices?.[0]?.message?.content ?? "").trim();
+      return text ? { ok: true as const, text } : { ok: false as const, text: "" };
+    } catch {
+      return { ok: false as const, text: "" };
+    }
   });
