@@ -1398,6 +1398,7 @@ function ForecastTable({
   }[];
   amount: number;
   accuracy?: ModelStats[];
+  weights?: { model: string; weight: number }[];
 }) {
   const avg = (key: "day" | "week" | "month") =>
     forecasts.length ? forecasts.reduce((s, f) => s + f[key], 0) / forecasts.length : 0;
