@@ -1386,6 +1386,7 @@ function ForecastTable({
   forecasts,
   amount,
   accuracy,
+  weights,
 }: {
   forecasts: {
     model: string;
