@@ -490,6 +490,19 @@ function HourlyForecastPanel({ result }: { result: AnalyzeResult }) {
       <div className="no-scrollbar flex gap-2 overflow-x-auto">
         {result.hourlyForecasts.map((row) => <Button key={row.hours} type="button" size="sm" variant={hours === row.hours ? "default" : "secondary"} onClick={() => setHours(row.hours)} className="shrink-0">{row.hours}u</Button>)}
       </div>
+      <p className="text-[11px] text-muted-foreground">
+        {result.intraday
+          ? `Berekend op echte intraday candles (${result.intraday.interval}, ${result.intraday.samples} candles): trend, VWAP, RSI, MACD, volume en ATR.`
+          : "Geen intraday candles beschikbaar bij de databron — dit is een schatting op basis van dagkoersen (minder nauwkeurig)."}
+      </p>
+      {result.intraday && (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <Mini label="Intraday VWAP" value={result.intraday.vwap != null ? `€${result.intraday.vwap.toFixed(2)}` : "—"} />
+          <Mini label="Intraday RSI" value={result.intraday.rsi != null ? result.intraday.rsi.toFixed(0) : "—"} />
+          <Mini label="Volume t.o.v. gem." value={result.intraday.volumeRatio != null ? `${result.intraday.volumeRatio.toFixed(2)}×` : "—"} />
+          <Mini label="Intraday ATR" value={`${result.intraday.atrPct.toFixed(2)}%`} />
+        </div>
+      )}
       <Card className="border-border/70 bg-card p-4 sm:p-5">
         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
           <div><p className="text-[10px] font-bold uppercase text-muted-foreground">Verwachting {active.hours} uur</p><p className={`mt-1 text-3xl font-bold ${active.expectedPct >= 0 ? "text-accent" : "text-destructive"}`}>{active.expectedPct >= 0 ? "+" : ""}{active.expectedPct.toFixed(2)}%</p></div>
@@ -570,9 +583,23 @@ function AnalysePanel({
             </div>
           </div>
           <div className="text-right">
-            <p className="text-[9px] font-bold uppercase text-muted-foreground">AI signaal</p>
+            <p className="text-[9px] font-bold uppercase text-muted-foreground">Signaal</p>
             <p className={`mt-1 text-xl font-bold ${signalTone}`}>{plan.signal.replace("_", " ")}</p>
-            <p className="text-[11px] text-muted-foreground">{plan.confidence}% vertrouwen</p>
+            <p className="text-[11px] text-muted-foreground">{plan.confidence}% modelmatig</p>
+          </div>
+          <div className="col-span-2 flex flex-wrap items-center gap-2 text-[10px]">
+            <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 ${result.dataFreshness.marketOpen ? "border-accent/40 bg-accent/10 text-accent" : "border-border bg-secondary/40 text-muted-foreground"}`}>
+              <span className="h-1.5 w-1.5 rounded-full bg-current" />
+              {result.dataFreshness.marketOpen ? "Markt open" : "Markt gesloten"}
+            </span>
+            <span className="text-muted-foreground">
+              Laatste koers {new Date(result.dataFreshness.lastPriceAt).toLocaleString("nl-NL", { dateStyle: "short", timeStyle: "short" })} · {result.dataFreshness.source}
+            </span>
+            {result.dataFreshness.stale && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-warning">
+                <AlertTriangle className="h-3 w-3" /> Data mogelijk vertraagd
+              </span>
+            )}
           </div>
           <p className="col-span-2 border-l-2 border-primary pl-3 text-xs leading-relaxed text-muted-foreground">{plan.summary}</p>
           <div className="col-span-2 grid grid-cols-3 gap-2">
