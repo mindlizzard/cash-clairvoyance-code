@@ -1072,6 +1072,8 @@ function BacktestPanel({ result }: { result: AnalyzeResult | null }) {
   const init = Number(initial) || 1000;
   const history = result?.history ?? [];
   const bt = useMemo(() => backtest(history, strategy, init), [history, strategy, init]);
+  const costPct = result?.market === "crypto" ? { feePct: 0.25, slippagePct: 0.1 } : { feePct: 0.1, slippagePct: 0.05 };
+  const pb = useMemo(() => backtestPlan(history, costPct), [history, costPct.feePct, costPct.slippagePct]);
 
   if (!result) return <EmptyHint text="Analyseer eerst een symbool om te backtesten." />;
 
