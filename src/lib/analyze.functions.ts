@@ -69,6 +69,7 @@ async function fetchNasdaqStock(symbol: string, assetClass: "stocks" | "etf"): P
   const format = (date: Date) => date.toISOString().slice(0, 10);
   const url = `https://api.nasdaq.com/api/quote/${encodeURIComponent(symbol)}/historical?assetclass=${assetClass}&fromdate=${format(start)}&todate=${format(end)}&limit=9999`;
   const res = await fetch(url, {
+    signal: AbortSignal.timeout(8_000),
     headers: {
       "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
       Accept: "application/json",
@@ -102,7 +103,7 @@ async function fetchStock(symbol: string): Promise<Candle[]> {
   let result: any = null;
   for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
     const url = `https://${host}/v8/finance/chart/${encodeURIComponent(t)}?range=5y&interval=1d`;
-    const res = await fetch(url, { headers });
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(8_000) });
     if (!res.ok) continue;
     const json: any = await res.json();
     result = json?.chart?.result?.[0];
@@ -112,7 +113,7 @@ async function fetchStock(symbol: string): Promise<Candle[]> {
   let rows = parseYahooCandles(result);
   if (rows.length < 30) {
     const sparkUrl = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${encodeURIComponent(t)}&range=5y&interval=1d`;
-    const sparkRes = await fetch(sparkUrl, { headers });
+    const sparkRes = await fetch(sparkUrl, { headers, signal: AbortSignal.timeout(8_000) });
     if (sparkRes.ok) {
       const sparkJson: any = await sparkRes.json();
       const sparkResult = sparkJson?.spark?.result?.[0]?.response?.[0];
@@ -136,7 +137,7 @@ async function fetchCrypto(symbol: string): Promise<Candle[]> {
   try {
   const id = symbol.toLowerCase().replace(/\s+/g, "-");
   const url = `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(id)}/market_chart?vs_currency=eur&days=365&interval=daily`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
   if (!res.ok) return [];
   const json = (await res.json()) as { prices: [number, number][] };
   if (!Array.isArray(json.prices)) return [];
@@ -472,6 +473,7 @@ async function fetchMacro(): Promise<{
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=5d&interval=1d`;
       const r = await fetch(url, {
+        signal: AbortSignal.timeout(6_000),
         headers: {
           "User-Agent":
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -509,6 +511,7 @@ async function fetchEarningsDate(symbol: string): Promise<string | null> {
   try {
     const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=calendarEvents`;
     const r = await fetch(url, {
+      signal: AbortSignal.timeout(6_000),
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -528,7 +531,7 @@ async function fetchEarningsDate(symbol: string): Promise<string | null> {
 /** Fear & Greed (crypto, alternative.me free). */
 async function fetchCryptoFearGreed(): Promise<{ value: number; label: string } | null> {
   try {
-    const r = await fetch("https://api.alternative.me/fng/?limit=1");
+    const r = await fetch("https://api.alternative.me/fng/?limit=1", { signal: AbortSignal.timeout(6_000) });
     if (!r.ok) return null;
     const j: any = await r.json();
     const x = j?.data?.[0];
@@ -641,14 +644,21 @@ export const analyzeAsset = createServerFn({ method: "POST" })
     const proj = (mu: number, days: number) => (Math.exp(mu * days) - 1) * 100;
     const band = (days: number) => vol * Math.sqrt(days) * 100; // 1-sigma band in %
 
-    const apiKey = process.env.LOVABLE_API_KEY;
     let ai: {
-      signal: "BUY" | "SELL" | "HOLD";
+      signal: "BUY" | "SELL" | "HOLD" | "NO_TRADE";
       confidence: number;
       shortTerm: string;
       longTerm: string;
       reasoning: string;
       risks: string;
+      tradePlan?: {
+        summary?: string;
+        riskLevel?: "laag" | "gemiddeld" | "hoog";
+        trendReason?: string;
+        momentumReason?: string;
+        riskReason?: string;
+        invalidation?: string;
+      };
       forecasts: {
         model: string;
         day: number;
@@ -743,109 +753,83 @@ export const analyzeAsset = createServerFn({ method: "POST" })
     const tpShort = Math.max(0, price - 2.5 * atrVal);
     const riskReward = atrVal > 0 ? 2.5 / 1.5 : 0;
 
-    if (apiKey) {
-      const prompt = `Je bent een ervaren technisch analist. Geef een nuchtere analyse voor ${data.symbol} (${data.market === "stock" ? "aandeel/ETF" : "crypto"}).
+    const score =
+      (trendDriftDay > 0 ? 1 : -1) +
+      (momentumDriftDay > 0 ? 1 : -1) +
+      (mcBase.week.probUp >= 55 ? 1 : mcBase.week.probUp <= 45 ? -1 : 0);
+    ai.signal = score >= 2 ? "BUY" : score <= -2 ? "SELL" : "HOLD";
+    ai.confidence = Math.min(82, 52 + Math.abs(score) * 10);
+    ai.shortTerm = `Het modelensemble verwacht ${mcBase.week.median >= 0 ? "opwaartse" : "neerwaartse"} druk met ${mcBase.week.probUp.toFixed(0)}% kans op winst in één week.`;
+    ai.reasoning = `Het ${regime}-regime, momentum en de Monte Carlo-verdeling vormen samen het hoofdsignaal.`;
+    ai.risks = `ATR is ${indicators.atrPct.toFixed(1)}% van de koers; onverwachte marktbewegingen blijven mogelijk.`;
 
-Volg deze redeneerstappen INTERN (niet uitschrijven):
-1. Beoordeel trend (SMA20 vs SMA50, regressieslope, regime).
-2. Beoordeel momentum (MACD-hist, RSI, Stochastic).
-3. Beoordeel volatiliteit & risico (ATR%, EWMA-vol, Bollinger-positie).
-4. Beoordeel macro context (VIX, DXY, 10Y, SPX). Hoge VIX of stijgende 10Y → meer voorzichtig.
-5. ${data.market === "stock" ? "Check earnings — vlak vóór earnings is volatiliteit hoog." : "Check crypto Fear & Greed — extreme greed → mean-reversion risico."}
-6. Combineer tot signal + verwachting met realistische onzekerheidsband.
+    const allowedSignals = new Set(["BUY", "SELL", "HOLD", "NO_TRADE"]);
+    if (!allowedSignals.has(ai.signal)) ai.signal = "HOLD";
+    ai.confidence = Math.max(0, Math.min(100, Number(ai.confidence) || 50));
 
-Voorbeelden (few-shot, ter referentie van toon en cijfers):
-- AAPL met RSI 72, SMA20>SMA50, VIX 13: signal HOLD, conf 55, week +1.2% ±3%, month +2.5% ±6%.
-- TSLA met RSI 28, MACD bullish-cross, VIX 22: signal BUY, conf 65, week +4% ±7%, month +9% ±15%.
-- NVDA met RSI 80, bearish MACD-hist, VIX 18: signal SELL/HOLD, conf 60, week -2% ±5%, month -4% ±12%.
-
-Huidige indicatoren:
-- Prijs: ${price.toFixed(4)}
-- Dagverandering: ${changePct.toFixed(2)}%
-- Week: ${indicators.weekChangePct.toFixed(2)}%, Maand: ${indicators.monthChangePct.toFixed(2)}%
-- SMA20: ${indicators.sma20?.toFixed(4)}, SMA50: ${indicators.sma50?.toFixed(4)}
-- RSI(14): ${indicators.rsi?.toFixed(1)}
-- MACD: ${indicators.macd?.toFixed(4)} signaal: ${indicators.macdSignal?.toFixed(4)} hist: ${indicators.macdHist?.toFixed(4)}
-- Stochastic %K: ${indicators.stochK?.toFixed(1)}, %D: ${indicators.stochD?.toFixed(1)}
-- Bollinger upper: ${indicators.bbUpper?.toFixed(4)}, lower: ${indicators.bbLower?.toFixed(4)}
-- ATR(14): ${atrVal.toFixed(4)} (${indicators.atrPct.toFixed(2)}% van prijs)
-- VWAP(20): ${vwapVal?.toFixed(4) ?? "n/a"}
-- Regime: ${regime}
-
-Statistiek over ${rets.length} dagen:
-- Gem. dagrendement (drift): ${(drift * 100).toFixed(3)}%
-- Dagelijkse volatiliteit (EWMA): ${(vol * 100).toFixed(2)}%
-- Geannualiseerde volatiliteit: ${annualVolPct.toFixed(1)}%
-- Regressie-trend laatste 90d: ${slopePctPerDay.toFixed(3)}%/dag
-
-Macro context:
-- VIX: ${macro.vix?.toFixed(2) ?? "n/a"}, DXY: ${macro.dxy?.toFixed(2) ?? "n/a"}, 10Y rente: ${macro.tnx?.toFixed(2) ?? "n/a"}%
-- S&P500 dag: ${macro.spxChangePct?.toFixed(2) ?? "n/a"}%, BTC dag: ${macro.btcChangePct?.toFixed(2) ?? "n/a"}%
-${earningsInDays != null ? `- Earnings over ${earningsInDays} dagen (${earningsIso?.slice(0, 10)})` : ""}
-${fng ? `- Crypto Fear & Greed: ${fng.value} (${fng.label})` : ""}
-
-Monte Carlo simulatie (1000 paden, basis-drift):
-- 1d: mediaan ${mcBase.day.median.toFixed(2)}%, kans op winst ${mcBase.day.probUp.toFixed(0)}%
-- 5d: mediaan ${mcBase.week.median.toFixed(2)}%, P10-P90 [${mcBase.week.p10.toFixed(1)}, ${mcBase.week.p90.toFixed(1)}], kans op winst ${mcBase.week.probUp.toFixed(0)}%
-- 21d: mediaan ${mcBase.month.median.toFixed(2)}%, P10-P90 [${mcBase.month.p10.toFixed(1)}, ${mcBase.month.p90.toFixed(1)}], kans op winst ${mcBase.month.probUp.toFixed(0)}%
-
-Heuristische modellen (referentie):
-${heuristicForecasts.map(f => `- ${f.model}: dag ${f.day}%, week ${f.week}%, maand ${f.month}% (±${f.bandMonth}%)`).join("\n")}
-
-Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidence (0-100 getal, verlaag bij hoge VIX of earnings binnen 7d), shortTerm (verwachting 1-2 weken, 1 zin NL), longTerm (3-6 maanden, 1 zin NL), reasoning (3-4 zinnen NL: trend, momentum, volatiliteit, macro), risks (1-2 zinnen NL), aiForecast { day: getal (%), week: getal (%), month: getal (%), bandDay: getal, bandWeek: getal, bandMonth: getal } — realistische rendementsverwachting met 1-sigma onzekerheidsband.`;
-
-      const callAi = async (model: string) => {
-        const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Lovable-API-Key": apiKey },
-          body: JSON.stringify({
-            model,
-            messages: [
-              { role: "system", content: "Je bent een Nederlandse technische beursanalist. Antwoord altijd in valide JSON." },
-              { role: "user", content: prompt },
-            ],
-            response_format: { type: "json_object" },
-          }),
-        });
-        if (r.status === 429) throw new Error("AI rate limit, probeer zo opnieuw");
-        if (r.status === 402) throw new Error("AI credits op");
-        if (!r.ok) throw new Error(`AI fout (${r.status})`);
-        const j = await r.json();
-        return JSON.parse(j.choices?.[0]?.message?.content ?? "{}");
+    const ensembleDay = ai.forecasts.length
+      ? mean(ai.forecasts.map((forecast) => forecast.day))
+      : mcBase.day.median;
+    const hourlyHorizons = [1, 2, 4, 8, 12, 24].map((hours) => {
+      const dayFraction = hours / 24;
+      const expectedPct = ensembleDay * dayFraction;
+      const bandPct = Math.max(0.05, vol * Math.sqrt(dayFraction) * 100);
+      const probabilityUp = Math.max(5, Math.min(95, 50 + (expectedPct / Math.max(bandPct, 0.01)) * 18));
+      return {
+        hours,
+        expectedPct: +expectedPct.toFixed(2),
+        expectedPrice: +(price * (1 + expectedPct / 100)).toFixed(4),
+        probabilityUp: +probabilityUp.toFixed(0),
+        low: +(price * (1 + (expectedPct - bandPct) / 100)).toFixed(4),
+        high: +(price * (1 + (expectedPct + bandPct) / 100)).toFixed(4),
       };
+    });
 
-      try {
-        // Parallel: Flash + Pro (ensemble)
-        const [flash, pro] = await Promise.allSettled([
-          callAi("google/gemini-3-flash-preview"),
-          callAi("google/gemini-3.1-pro-preview"),
-        ]);
-        const flashOk = flash.status === "fulfilled" ? flash.value : null;
-        const proOk = pro.status === "fulfilled" ? pro.value : null;
-        const parsed = flashOk ?? proOk ?? {};
-        const { aiForecast, ...rest } = parsed ?? {};
-        ai = { ...ai, ...rest };
-        const aiList: { model: string; data: any }[] = [];
-        if (flashOk?.aiForecast) aiList.push({ model: "AI Flash", data: flashOk.aiForecast });
-        if (proOk?.aiForecast) aiList.push({ model: "AI Pro", data: proOk.aiForecast });
-        const aiForecasts = aiList.map(({ model, data: a }) => ({
-          model,
-          day: +Number(a.day ?? 0).toFixed(2),
-          week: +Number(a.week ?? 0).toFixed(2),
-          month: +Number(a.month ?? 0).toFixed(2),
-          bandDay: +Number(a.bandDay ?? band(1)).toFixed(2),
-          bandWeek: +Number(a.bandWeek ?? band(5)).toFixed(2),
-          bandMonth: +Number(a.bandMonth ?? band(21)).toFixed(2),
-        }));
-        if (aiForecast && typeof aiForecast === "object") {
-          ai.forecasts = [...aiForecasts, ...heuristicForecasts];
-        } else if (aiForecasts.length) {
-          ai.forecasts = [...aiForecasts, ...heuristicForecasts];
-        }
-      } catch (e) {
-        ai.reasoning = `AI-prognose niet beschikbaar: ${(e as Error).message}`;
-      }
-    }
+    const recent20 = candles.slice(-20);
+    const support = Math.min(...recent20.map((c) => c.low ?? c.close));
+    const resistance = Math.max(...recent20.map((c) => c.high ?? c.close));
+    const highEventRisk =
+      (earningsInDays != null && earningsInDays >= 0 && earningsInDays <= 7) ||
+      (macro.vix != null && macro.vix >= 25) ||
+      (fng != null && (fng.value <= 20 || fng.value >= 80));
+    const weakEdge = Math.abs(ensembleDay) < Math.max(0.08, vol * 25);
+    if (highEventRisk || (ai.confidence < 52 && weakEdge)) ai.signal = "NO_TRADE";
+
+    const isShort = ai.signal === "SELL";
+    const entryLow = isShort ? price : Math.max(support, price - atrVal * 0.45);
+    const entryHigh = isShort ? Math.min(resistance, price + atrVal * 0.45) : price;
+    const stopLoss = isShort ? price + atrVal * 1.5 : Math.max(0, price - atrVal * 1.5);
+    const takeProfit1 = isShort ? Math.max(0, price - atrVal * 1.5) : price + atrVal * 1.5;
+    const takeProfit2 = isShort ? Math.max(0, price - atrVal * 2.5) : price + atrVal * 2.5;
+    const riskLevel: "laag" | "gemiddeld" | "hoog" =
+      highEventRisk || indicators.atrPct >= 4 ? "hoog" : indicators.atrPct >= 2 ? "gemiddeld" : "laag";
+    const tradePlan = {
+      signal: ai.signal,
+      confidence: Math.round(ai.confidence),
+      summary: ai.tradePlan?.summary || ai.shortTerm || (ai.signal === "NO_TRADE" ? "Onvoldoende voordeel tegenover het actuele risico; afwachten is rationeler." : "Het modelsignaal heeft voldoende technische bevestiging voor een gecontroleerde setup."),
+      riskLevel,
+      entryLow: +Math.min(entryLow, entryHigh).toFixed(4),
+      entryHigh: +Math.max(entryLow, entryHigh).toFixed(4),
+      stopLoss: +stopLoss.toFixed(4),
+      takeProfit1: +takeProfit1.toFixed(4),
+      takeProfit2: +takeProfit2.toFixed(4),
+      riskReward: +riskReward.toFixed(2),
+      probabilityUp: +mcBase.day.probUp.toFixed(0),
+      probabilityDown: +(100 - mcBase.day.probUp).toFixed(0),
+      invalidation: ai.tradePlan?.invalidation || (isShort ? `Setup ongeldig bij een dagslot boven ${resistance.toFixed(2)}.` : `Setup ongeldig bij een dagslot onder ${support.toFixed(2)}.`),
+      reasons: [
+        ai.tradePlan?.trendReason || `Trendregime: ${regime}; 90-daagse helling ${slopePctPerDay.toFixed(3)}% per dag.`,
+        ai.tradePlan?.momentumReason || `RSI ${indicators.rsi?.toFixed(0) ?? "n.v.t."} en MACD-histogram ${(indicators.macdHist ?? 0) >= 0 ? "positief" : "negatief"}.`,
+        ai.tradePlan?.riskReason || `ATR ${indicators.atrPct.toFixed(1)}% en VIX ${macro.vix?.toFixed(1) ?? "niet beschikbaar"}.`,
+      ],
+      eventRisk: highEventRisk
+        ? earningsInDays != null && earningsInDays >= 0 && earningsInDays <= 7
+          ? `Earnings over ${earningsInDays} dagen`
+          : macro.vix != null && macro.vix >= 25
+            ? `VIX verhoogd (${macro.vix.toFixed(1)})`
+            : `Fear & Greed extreem (${fng?.value})`
+        : null,
+    };
 
     const chart = candles.slice(-90).map((c, i) => {
       const idx = candles.length - 90 + i;
@@ -868,6 +852,9 @@ Antwoord uitsluitend in JSON met velden: signal ("BUY"|"SELL"|"HOLD"), confidenc
       market: data.market,
       indicators,
       ai,
+      tradePlan,
+      hourlyForecasts: hourlyHorizons,
+      levels: { support: +support.toFixed(4), resistance: +resistance.toFixed(4) },
       chart,
       history,
       stats: {
