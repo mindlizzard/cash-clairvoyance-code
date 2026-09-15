@@ -1176,7 +1176,12 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       intradayInterval: intradayRaw?.label ?? null,
       intradaySamples: intradayCtx?.samples ?? 0,
       stale: marketOpen ? ageMinutes > 45 : ageMinutes > 60 * 24 * 4,
-      source: data.market === "stock" ? "Yahoo Finance" : "CoinGecko",
+      source: (() => {
+        const label = intradayRaw?.label ?? "";
+        if (label.includes("Nasdaq")) return "Nasdaq (intraday)";
+        if (label.includes("Binance")) return "Binance (intraday)";
+        return data.market === "stock" ? "Yahoo Finance" : "CoinGecko";
+      })(),
     };
 
     return {
