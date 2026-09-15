@@ -1429,11 +1429,12 @@ function ForecastTable({
             <tr key={f.model} className="border-b border-border/40 last:border-0">
               <td className="py-2 pr-3 font-medium">
                 <div>{f.model}</div>
-                {a && (
-                  <div className="text-[10px] text-muted-foreground">
-                    {a.samples}x · hit {a.hitRate.toFixed(0)}% · MAE {a.mae.toFixed(1)}%
-                  </div>
-                )}
+                <div className="text-[10px] text-muted-foreground">
+                  {a && a.sufficient && a.hitRate != null && a.mae != null
+                    ? `${a.samples} metingen · hit ${a.hitRate.toFixed(0)}% · MAE ${a.mae.toFixed(1)}%`
+                    : `onvoldoende data (${a?.samples ?? 0}/${MIN_SAMPLES})`}
+                  {w != null && ` · gewicht ${(w * 100).toFixed(0)}%`}
+                </div>
               </td>
               <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.day)}`}>{fmtPct(f.day)}<span className="text-[10px] text-muted-foreground">{fmtBand(f.bandDay)}</span></td>
               <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.week)}`}>{fmtPct(f.week)}<span className="text-[10px] text-muted-foreground">{fmtBand(f.bandWeek)}</span></td>
