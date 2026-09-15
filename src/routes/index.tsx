@@ -1411,6 +1411,7 @@ function ForecastTable({
   const toneCls = (n: number) =>
     n > 0 ? "text-accent" : n < 0 ? "text-destructive" : "text-muted-foreground";
   const accMap = new Map((accuracy ?? []).map((a) => [a.model, a]));
+  const weightMap = new Map((weights ?? []).map((x) => [x.model, x.weight]));
 
   return (
     <div className="overflow-x-auto">
