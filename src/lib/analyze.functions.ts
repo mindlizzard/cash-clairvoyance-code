@@ -122,11 +122,14 @@ async function fetchIntradayCrypto(
       const spanMinutes =
         (rows[rows.length - 1].t - rows[0].t) / 60_000 / Math.max(rows.length - 1, 1);
       const intervalMinutes = Math.max(1, Math.round(spanMinutes));
-      return { candles: rows, intervalMinutes, label: `${intervalMinutes}m` };
+      const value = { candles: rows, intervalMinutes, label: `${intervalMinutes}m` };
+      intradayCache.set(`c:${id}`, { at: Date.now(), value });
+      return value;
     } catch {
       // volgende poging
     }
   }
+  intradayCache.set(`c:${id}`, { at: Date.now(), value: null });
   return null;
 }
 
