@@ -71,7 +71,7 @@ async function fetchIntradayStock(
       const json: any = await yahooJson(
         `/v8/finance/chart/${encodeURIComponent(symbol)}?range=${a.range}&interval=${a.interval}`,
       );
-      if (!json) continue;
+      if (!json) { console.log("[intraday] geen json", a.interval); continue; }
       const r = json?.chart?.result?.[0];
       const ts: number[] = r?.timestamp ?? [];
       const q = r?.indicators?.quote?.[0] ?? {};
