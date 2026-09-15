@@ -33,7 +33,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Yahoo-verzoek met host-rotatie en backoff bij 429. */
 async function yahooJson(path: string): Promise<any | null> {
   const hosts = ["query1", "query2"];
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     const host = hosts[attempt % hosts.length];
     try {
       const res = await fetch(`https://${host}.finance.yahoo.com${path}`, {
