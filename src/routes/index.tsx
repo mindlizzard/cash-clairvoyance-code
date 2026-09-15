@@ -1085,6 +1085,22 @@ function BacktestPanel({ result }: { result: AnalyzeResult | null }) {
 
   return (
     <div className="space-y-6">
+      <Card className="border-border/70 bg-card p-5">
+        <h4 className="text-lg font-semibold">Backtest van het handelsplan</h4>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Dezelfde BUY / SELL / NO TRADE-logica als de live-motor, met ATR-stop, take profits, {pb.costPct.toFixed(2)}% kosten en slippage per trade, op {pb.bars} dagen historie.
+        </p>
+        <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+          <Stat label="Totaal rendement" value={`${pb.totalReturnPct >= 0 ? "+" : ""}${pb.totalReturnPct.toFixed(1)}%`} tone={pb.totalReturnPct >= 0 ? "up" : "down"} hint={`Buy & hold: ${pb.buyHoldPct.toFixed(1)}%`} />
+          <Stat label="Win rate" value={pb.winRate == null ? "—" : `${pb.winRate.toFixed(0)}%`} hint={`${pb.trades.length} trades · ${pb.noTradeBars} dagen geen trade`} />
+          <Stat label="Profit factor" value={pb.profitFactor == null ? "—" : pb.profitFactor.toFixed(2)} hint={pb.expectancyPct == null ? undefined : `Expectancy ${pb.expectancyPct.toFixed(2)}%`} />
+          <Stat label="Max drawdown" value={`-${pb.maxDrawdownPct.toFixed(1)}%`} tone="down" />
+        </div>
+        {pb.trades.length === 0 && (
+          <p className="mt-3 text-xs text-warning">Het plan gaf op deze historie geen enkele trade — de edge bleef onder de kosten.</p>
+        )}
+      </Card>
+
       <Card className="border-border/60 bg-card p-5">
         <h4 className="mb-3 text-lg font-semibold">Strategie kiezen</h4>
         <div className="grid gap-3 md:grid-cols-3">
