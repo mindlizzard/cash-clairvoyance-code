@@ -325,7 +325,7 @@ function Home() {
         </Tabs>
 
         <footer className="mt-12 border-t border-border/60 pt-6 text-center text-xs text-muted-foreground">
-          Koersdata: Yahoo Finance & CoinGecko. Nieuws: Yahoo. Signalen worden volledig kwantitatief berekend in de app; een taalmodel wordt alleen gebruikt om te vatten en voor nieuws-sentiment. Meting en opslag lokaal in je browser.
+          Koersdata: Yahoo Finance, Nasdaq, Binance & CoinGecko. Nieuws: Yahoo. Signalen worden volledig kwantitatief berekend in de app; een taalmodel wordt alleen gebruikt om te vatten en voor nieuws-sentiment. Meting en opslag lokaal in je browser.
         </footer>
       </main>
       <div className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-background/95 px-2 pb-[max(0.55rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-xl sm:hidden">

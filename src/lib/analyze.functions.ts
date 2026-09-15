@@ -33,7 +33,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Yahoo-verzoek met host-rotatie en backoff bij 429. */
 async function yahooJson(path: string): Promise<any | null> {
   const hosts = ["query1", "query2"];
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     const host = hosts[attempt % hosts.length];
     try {
       const res = await fetch(`https://${host}.finance.yahoo.com${path}`, {
@@ -41,7 +41,7 @@ async function yahooJson(path: string): Promise<any | null> {
         signal: AbortSignal.timeout(7_000),
       });
       if (res.status === 429 || res.status >= 500) {
-        await sleep(400 * (attempt + 1));
+        await sleep(600 * (attempt + 1));
         continue;
       }
       if (!res.ok) return null;
@@ -89,18 +89,133 @@ async function fetchIntradayStock(
           v: num(q.volume?.[i]),
         });
       }
-      if (rows.length >= 40) return { candles: rows, intervalMinutes: a.minutes, label: a.interval };
+      if (rows.length >= 40) {
+        const value = { candles: rows, intervalMinutes: a.minutes, label: a.interval };
+        intradayCache.set(`s:${symbol}`, { at: Date.now(), value });
+        return value;
+      }
     } catch {
       // volgende interval proberen
+    }
+  }
+  // Reserve: Nasdaq intraday (1-minuut punten van de huidige/laatste handelsdag)
+  const nasdaq = await fetchIntradayNasdaq(symbol);
+  intradayCache.set(`s:${symbol}`, { at: Date.now(), value: nasdaq });
+  return nasdaq;
+}
+
+/** Reservebron voor intraday aandelen: Nasdaq quote-chart (1-minuut). */
+async function fetchIntradayNasdaq(
+  symbol: string,
+): Promise<{ candles: IntradayCandle[]; intervalMinutes: number; label: string } | null> {
+  for (const assetclass of ["stocks", "etf"]) {
+    try {
+      const res = await fetch(
+        `https://api.nasdaq.com/api/quote/${encodeURIComponent(symbol)}/chart?assetclass=${assetclass}`,
+        { headers: YAHOO_HEADERS, signal: AbortSignal.timeout(7_000) },
+      );
+      if (!res.ok) continue;
+      const json: any = await res.json();
+      const raw: any[] = json?.data?.chart ?? [];
+      const rows: IntradayCandle[] = [];
+      for (const p of raw) {
+        const t = Number(p?.x);
+        const c = Number(p?.y);
+        if (!isFinite(t) || !isFinite(c) || c <= 0) continue;
+        rows.push({ t, c });
+      }
+      if (rows.length < 40) continue;
+      // Verdicht naar 5-minuten candles voor stabielere indicatoren
+      const bucketMs = 5 * 60_000;
+      const buckets = new Map<number, IntradayCandle[]>();
+      for (const r of rows) {
+        const k = Math.floor(r.t / bucketMs) * bucketMs;
+        buckets.set(k, [...(buckets.get(k) ?? []), r]);
+      }
+      const merged: IntradayCandle[] = [...buckets.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([t, group]) => {
+          const cs = group.map((g) => g.c);
+          return {
+            t,
+            o: cs[0],
+            h: Math.max(...cs),
+            l: Math.min(...cs),
+            c: cs[cs.length - 1],
+          };
+        });
+      if (merged.length < 30) continue;
+      // Nasdaq geeft tijden in beurstijd (ET) alsof het UTC is; corrigeer met
+      // hele uren zodat de laatste candle net vóór nu ligt.
+      const lastT = merged[merged.length - 1].t;
+      const shiftHours = Math.round((Date.now() - lastT) / 3_600_000);
+      if (shiftHours > 0 && shiftHours <= 12) {
+        const delta = shiftHours * 3_600_000;
+        for (const m of merged) m.t += delta;
+      }
+      return { candles: merged, intervalMinutes: 5, label: "5m (Nasdaq)" };
+    } catch {
+      // volgende assetclass
     }
   }
   return null;
 }
 
-/** Intraday voor crypto via CoinGecko (5-minuten/uur granulariteit). */
+/** Binance klines als primaire intraday-bron voor crypto (betrouwbaar en snel). */
+const BINANCE_SYMBOLS: Record<string, string> = {
+  bitcoin: "BTCEUR",
+  ethereum: "ETHEUR",
+  solana: "SOLEUR",
+  cardano: "ADAEUR",
+  ripple: "XRPEUR",
+  dogecoin: "DOGEEUR",
+  polkadot: "DOTEUR",
+  litecoin: "LTCEUR",
+  chainlink: "LINKEUR",
+  avalanche: "AVAXEUR",
+  "avalanche-2": "AVAXEUR",
+  "binancecoin": "BNBEUR",
+};
+
+async function fetchIntradayBinance(
+  id: string,
+): Promise<{ candles: IntradayCandle[]; intervalMinutes: number; label: string } | null> {
+  const pair = BINANCE_SYMBOLS[id];
+  if (!pair) return null;
+  try {
+    const res = await fetch(
+      `https://api.binance.com/api/v3/klines?symbol=${pair}&interval=15m&limit=300`,
+      { signal: AbortSignal.timeout(7_000) },
+    );
+    if (!res.ok) return null;
+    const json: any = await res.json();
+    if (!Array.isArray(json) || json.length < 40) return null;
+    const rows: IntradayCandle[] = json.map((k: any[]) => ({
+      t: Number(k[0]),
+      o: Number(k[1]),
+      h: Number(k[2]),
+      l: Number(k[3]),
+      c: Number(k[4]),
+      v: Number(k[5]),
+    })).filter((r: IntradayCandle) => isFinite(r.c) && r.c > 0);
+    if (rows.length < 40) return null;
+    return { candles: rows, intervalMinutes: 15, label: "15m (Binance)" };
+  } catch {
+    return null;
+  }
+}
+
+/** Intraday voor crypto: Binance klines → CoinGecko market_chart. */
 async function fetchIntradayCrypto(
   id: string,
 ): Promise<{ candles: IntradayCandle[]; intervalMinutes: number; label: string } | null> {
+  const cached = intradayCache.get(`c:${id}`);
+  if (cached && Date.now() - cached.at < INTRADAY_TTL_MS) return cached.value;
+  const binance = await fetchIntradayBinance(id);
+  if (binance) {
+    intradayCache.set(`c:${id}`, { at: Date.now(), value: binance });
+    return binance;
+  }
   for (const days of [1, 7]) {
     try {
       const url = `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(id)}/market_chart?vs_currency=eur&days=${days}`;
@@ -115,11 +230,14 @@ async function fetchIntradayCrypto(
       const spanMinutes =
         (rows[rows.length - 1].t - rows[0].t) / 60_000 / Math.max(rows.length - 1, 1);
       const intervalMinutes = Math.max(1, Math.round(spanMinutes));
-      return { candles: rows, intervalMinutes, label: `${intervalMinutes}m` };
+      const value = { candles: rows, intervalMinutes, label: `${intervalMinutes}m` };
+      intradayCache.set(`c:${id}`, { at: Date.now(), value });
+      return value;
     } catch {
       // volgende poging
     }
   }
+  intradayCache.set(`c:${id}`, { at: Date.now(), value: null });
   return null;
 }
 
@@ -1058,7 +1176,12 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       intradayInterval: intradayRaw?.label ?? null,
       intradaySamples: intradayCtx?.samples ?? 0,
       stale: marketOpen ? ageMinutes > 45 : ageMinutes > 60 * 24 * 4,
-      source: data.market === "stock" ? "Yahoo Finance" : "CoinGecko",
+      source: (() => {
+        const label = intradayRaw?.label ?? "";
+        if (label.includes("Nasdaq")) return "Nasdaq (intraday)";
+        if (label.includes("Binance")) return "Binance (intraday)";
+        return data.market === "stock" ? "Yahoo Finance" : "CoinGecko";
+      })(),
     };
 
     return {
