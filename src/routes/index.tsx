@@ -707,10 +707,21 @@ function AnalysePanel({
       {section === "models" && <>
         <Card className="border-border/70 bg-card p-4 sm:p-5">
           <div className="mb-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-            <div><h3 className="text-lg font-semibold">Modelensemble</h3><p className="text-xs text-muted-foreground">Het model met de beste recente hit-rate telt het zwaarst mee.</p></div>
+            <div><h3 className="text-lg font-semibold">Modelensemble</h3><p className="text-xs text-muted-foreground">Modellen met de beste gemeten hit-rate voor dit symbool tellen zwaarder mee. Zonder metingen weegt elk model gelijk.</p></div>
             <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">Inleg €</span><Input type="number" min={0} value={amount} onChange={(e) => setAmount(e.target.value)} className="w-28" /></div>
           </div>
-          <ForecastTable forecasts={result.ai.forecasts} amount={Number(amount) || 0} accuracy={getModelStats(result.symbol, result.market)} />
+          <ForecastTable
+            forecasts={result.ai.forecasts}
+            amount={Number(amount) || 0}
+            accuracy={getModelStats(result.symbol, result.market)}
+            weights={getEnsembleWeights(result.ai.forecasts.map((f) => f.model), result.symbol, result.market)}
+          />
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <Mini label="Ensemble week" value={`${result.ensemble.ensembleWeekPct >= 0 ? "+" : ""}${result.ensemble.ensembleWeekPct.toFixed(2)}%`} />
+            <Mini label="Signaal-z-score" value={result.ensemble.zWeek.toFixed(2)} />
+            <Mini label="Overeenstemming" value={`${result.ensemble.agreement}%`} />
+            <Mini label="Edge vs kosten" value={`${result.ensemble.edgePct.toFixed(2)}% / ${result.ensemble.costPct.toFixed(2)}%`} />
+          </div>
           <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-5">
             <div><span className="font-medium text-foreground">{result.stats.samples}</span> dagen</div>
             <div>Drift <span className="font-medium text-foreground">{result.stats.driftPct.toFixed(3)}%</span></div>
