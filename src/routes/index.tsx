@@ -159,26 +159,43 @@ function Home() {
   // Accuracy tracking: score oude voorspellingen, log nieuwe per model en horizon
   useEffect(() => {
     if (!result) return;
-    const price = result.indicators.price;
     const fresh = result.dataFreshness;
-    const stale = !!fresh?.stale;
-    const priceAt = fresh?.lastPriceAt ? new Date(fresh.lastPriceAt).getTime() : undefined;
+    const ref = fresh?.reference;
+    // Prijs én tijdstip komen uit dezelfde waarneming (candle/provider).
+    const refPrice = ref?.price;
+    const refAt = ref?.at ? Date.parse(ref.at) : NaN;
+    const stale = !!fresh?.stale || fresh?.trustworthy === false;
+    const minHorizonHours = ref?.minHorizonHours ?? 24;
+    const trustworthy =
+      !!refPrice && isFinite(refPrice) && refPrice > 0 && isFinite(refAt) && !stale;
+
+    // Paper trading gebruikt de laatst bekende koers (mag ook dagslot zijn).
+    updatePaperTrades(result.symbol, result.market, result.indicators.price);
+    if (!trustworthy) return; // geen betrouwbaar prijs+tijd-paar → niets loggen/scoren
+
     scoreOpenForecasts({
       symbol: result.symbol,
       market: result.market,
-      currentPrice: price,
-      priceAt: priceAt && isFinite(priceAt) ? priceAt : undefined,
-      stale,
+      currentPrice: refPrice,
+      priceAt: refAt,
+      sourceKind: ref!.kind,
+      minHorizonHours,
+      stale: false,
     });
-    updatePaperTrades(result.symbol, result.market, price);
     const hour = (h: number) =>
       result.hourlyForecasts.find((row) => row.hours === h)?.expectedPct ?? 0;
+    const intradayBased = ref!.kind === "intraday";
     logForecasts({
       symbol: result.symbol,
       market: result.market,
-      price,
-      stale,
+      price: refPrice,
+      observedAt: refAt,
+      sourceKind: ref!.kind,
+      sourceLabel: ref!.source,
+      minHorizonHours,
+      stale: false,
       entries: [
+
 
         ...result.ai.forecasts.map((f) => ({
           model: f.model,
@@ -191,15 +208,21 @@ function Home() {
         {
           model: "Ensemble (handelsplan)",
           predictions: [
-            { key: "1u" as const, predictedPct: hour(1) },
-            { key: "4u" as const, predictedPct: hour(4) },
+            // 1u/4u alleen als de basis een echte, verse intraday-candle is
+            ...(intradayBased && result.hourlyForecasts.every((r) => r.source === "intraday")
+              ? [
+                  { key: "1u" as const, predictedPct: hour(1) },
+                  { key: "4u" as const, predictedPct: hour(4) },
+                ]
+              : []),
             { key: "24u" as const, predictedPct: hour(24) },
             { key: "1w" as const, predictedPct: result.ensemble.ensembleWeekPct },
           ],
         },
       ],
     });
-  }, [result?.symbol, result?.market, result?.indicators.price]);
+  }, [result?.symbol, result?.market, result?.dataFreshness?.reference?.at]);
+
 
   const submit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -568,6 +591,8 @@ function AnalysePanel({
   onAlert: () => void;
 }) {
   const [section, setSection] = useState("overview");
+  const tracking = getTrackingOverview(result.symbol, result.market);
+
   const inWatch = useStore().watchlist.some(
     (w) => w.symbol === result.symbol && w.market === result.market,
   );
@@ -618,8 +643,12 @@ function AnalysePanel({
               {result.dataFreshness.marketOpen ? "Markt open" : "Markt gesloten"}
             </span>
             <span className="text-muted-foreground">
-              Laatste koers {new Date(result.dataFreshness.lastPriceAt).toLocaleString("nl-NL", { dateStyle: "short", timeStyle: "short" })} · {result.dataFreshness.source}
+              {result.dataFreshness.reference?.kind === "dagslot"
+                ? `Slotkoers ${new Date(result.dataFreshness.reference.at).toLocaleDateString("nl-NL", { dateStyle: "short" })}`
+                : `Laatste koers ${new Date(result.dataFreshness.lastPriceAt).toLocaleString("nl-NL", { dateStyle: "short", timeStyle: "short" })}`}{" "}
+              · {result.dataFreshness.source}
             </span>
+
             {result.dataFreshness.stale && (
               <span className="inline-flex items-center gap-1 rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-warning">
                 <AlertTriangle className="h-3 w-3" /> Data mogelijk vertraagd
@@ -742,13 +771,16 @@ function AnalysePanel({
               </div>
               <div>
                 <p className="text-[10px] font-bold uppercase">Gecontroleerde voorspellingen</p>
-                <p className="text-sm font-semibold text-foreground tabular-nums">{getTrackingOverview(result.symbol, result.market).observations}</p>
-                <p className="text-[10px]">{getTrackingOverview(result.symbol, result.market).pending} lopen nog</p>
+                <p className="text-sm font-semibold text-foreground tabular-nums">{tracking.observations}</p>
+                <p className="text-[10px]">
+                  {tracking.pending} lopen nog · {tracking.awaiting} te beoordelen · {tracking.horizonChecks} horizon-controles
+                </p>
               </div>
             </div>
             <p className="mt-2">
-              Controle van 1u/4u/24u/1w/1m kost tijd: analyseer dit symbool later opnieuw, zodat er een echte vergelijkingskoers wordt opgehaald rond het einde van elke horizon.
+              Controle van 1u/4u/24u/1w/1m kost die tijd: analyseer dit symbool later opnieuw, zodat er rond het einde van elke horizon een echte vergelijkingskoers wordt opgehaald. Met alleen een dagslotkoers worden 1u en 4u niet getoetst.
             </p>
+
           </div>
 
           <ForecastTable
@@ -1544,7 +1576,7 @@ function ForecastTable({
                 <div>{f.model}</div>
                 <div className="text-[10px] text-muted-foreground">
                   {a && a.sufficient && a.hitRate != null && a.mae != null
-                    ? `${a.samples} controles · richting juist ${a.hitRate.toFixed(0)}% · MAE ${a.mae.toFixed(1)}%`
+                    ? `${a.observations} waarnemingen · ${a.samples} horizon-controles · richting juist ${a.hitRate.toFixed(0)}% · MAE ${a.mae.toFixed(1)}%`
                     : trackingLabel(a?.samples ?? 0)}
                   {w != null && ` · weegfactor (indicatief) ${(w * 100).toFixed(0)}%`}
                 </div>
@@ -1993,9 +2025,12 @@ function AccuracyPanel({ result }: { result: AnalyzeResult }) {
             <p className="text-base font-semibold text-foreground tabular-nums">{result.stats.samples}</p>
           </div>
           <div className="rounded-md border border-border/60 bg-secondary/30 p-2.5">
-            <p className="text-[10px] font-bold uppercase">Gecontroleerde voorspellingen</p>
+            <p className="text-[10px] font-bold uppercase">Onafhankelijke waarnemingen</p>
             <p className="text-base font-semibold text-foreground tabular-nums">{overview.observations}</p>
-            <p className="text-[10px]">{overview.pending} lopen nog · {overview.expired} verlopen zonder verse koers</p>
+            <p className="text-[10px]">
+              {overview.horizonChecks} horizon-controles · {overview.pending} lopen nog · {overview.awaiting} te beoordelen · {overview.expired} verlopen zonder betrouwbare koers
+            </p>
+
           </div>
         </div>
         <div className="mt-4 overflow-x-auto">
@@ -2003,8 +2038,9 @@ function AccuracyPanel({ result }: { result: AnalyzeResult }) {
             <thead>
               <tr className="border-b border-border/60 text-left text-xs uppercase tracking-wider text-muted-foreground">
                 <th className="py-2 pr-3 font-medium">Horizon</th>
-                <th className="py-2 px-3 text-right font-medium">Controles</th>
-                <th className="py-2 px-3 text-right font-medium">Lopend</th>
+                <th className="py-2 px-3 text-right font-medium">Waarnemingen</th>
+                <th className="py-2 px-3 text-right font-medium">Horizon-controles</th>
+                <th className="py-2 px-3 text-right font-medium">Lopend / te beoordelen</th>
                 <th className="py-2 px-3 text-right font-medium">Richting juist</th>
                 <th className="py-2 pl-3 text-right font-medium">Gem. fout</th>
               </tr>
@@ -2014,10 +2050,12 @@ function AccuracyPanel({ result }: { result: AnalyzeResult }) {
                 <tr key={h.key} className="border-b border-border/40 last:border-0">
                   <td className="py-2 pr-3 font-medium">{h.label}</td>
                   <td className="py-2 px-3 text-right tabular-nums">{h.observations}</td>
-                  <td className="py-2 px-3 text-right tabular-nums">{h.pending}</td>
+                  <td className="py-2 px-3 text-right tabular-nums">{h.modelChecks}</td>
+                  <td className="py-2 px-3 text-right tabular-nums">{h.pending} / {h.awaiting}</td>
                   <td className="py-2 px-3 text-right tabular-nums">
                     {h.sufficient && h.hitRate != null ? `${h.hitRate.toFixed(0)}%` : <span className="text-warning">{trackingLabel(h.observations)}</span>}
                   </td>
+
                   <td className="py-2 pl-3 text-right tabular-nums">
                     {h.sufficient && h.mae != null ? `${h.mae.toFixed(2)}%` : "—"}
                   </td>
@@ -2027,12 +2065,13 @@ function AccuracyPanel({ result }: { result: AnalyzeResult }) {
           </table>
         </div>
         <p className="mt-3 text-[10px] text-muted-foreground">
-          Elke horizon (1u, 4u, 24u, 1 week, 1 maand) kost die tijd voordat hij te toetsen is. Analyseer dit symbool later opnieuw rond het einde van een horizon, dan wordt de echte vergelijkingskoers opgehaald. Vertraagde of onbevestigde koersen tellen niet mee.
+          Elke horizon (1u, 4u, 24u, 1 week, 1 maand) kost die tijd voordat hij te toetsen is. Analyseer dit symbool later opnieuw rond het einde van een horizon, dan wordt de echte vergelijkingskoers opgehaald. Koers en tijdstip komen altijd uit dezelfde waarneming; vertraagde of onbevestigde koersen tellen niet mee. Met alleen een dagslotkoers worden 1u en 4u niet getoetst. Eén basismoment dat 24u + 1 week + 1 maand oplevert, telt als één waarneming en drie horizon-controles.
         </p>
       </Card>
 
       <Card className="border-border/70 bg-card p-4 sm:p-5">
-        <h4 className="text-sm font-semibold">Per model (afzonderlijk per model en horizon geteld)</h4>
+        <h4 className="text-sm font-semibold">Per model (horizon-controles per model apart geteld)</h4>
+
         {stats.length === 0 ? (
           <p className="mt-2 text-sm text-muted-foreground">
             Nog niet getoetst. De modellen rekenen wél al met {result.stats.samples} historische koersdagen; controles verschijnen hier zodra voorspellingen verlopen zijn.
@@ -2044,7 +2083,7 @@ function AccuracyPanel({ result }: { result: AnalyzeResult }) {
                 <span className="min-w-0 truncate font-medium">{s.model}</span>
                 <span className="shrink-0 text-xs text-muted-foreground">
                   {s.sufficient && s.hitRate != null && s.mae != null
-                    ? `${s.samples} controles · richting juist ${s.hitRate.toFixed(0)}% · MAE ${s.mae.toFixed(1)}%`
+                    ? `${s.observations} waarnemingen · ${s.samples} horizon-controles · richting juist ${s.hitRate.toFixed(0)}% · MAE ${s.mae.toFixed(1)}%`
                     : trackingLabel(s.samples)}
                 </span>
               </div>
