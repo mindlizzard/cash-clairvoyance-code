@@ -1980,20 +1980,32 @@ function AccuracyPanel({ result }: { result: AnalyzeResult }) {
   useEffect(() => onAccuracyChange(() => bump((n) => n + 1)), []);
   const summary = getHorizonSummary(result.symbol, result.market);
   const stats = getModelStats(result.symbol, result.market);
+  const overview = getTrackingOverview(result.symbol, result.market);
+
 
   return (
     <div className="space-y-4">
       <Card className="border-border/70 bg-card p-4 sm:p-5">
         <h3 className="text-lg font-semibold">Gemeten nauwkeurigheid — {result.symbol}</h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Elke analyse legt de voorspellingen vast. Zodra de horizon verstreken is, worden ze vergeleken met de echte koers. Onder {MIN_SAMPLES} metingen tonen we geen percentage.
-        </p>
+        <p className="mt-1 text-xs text-muted-foreground">{ACCURACY_EXPLAINER}</p>
+        <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+          <div className="rounded-md border border-border/60 bg-secondary/30 p-2.5">
+            <p className="text-[10px] font-bold uppercase">Historische koersdagen</p>
+            <p className="text-base font-semibold text-foreground tabular-nums">{result.stats.samples}</p>
+          </div>
+          <div className="rounded-md border border-border/60 bg-secondary/30 p-2.5">
+            <p className="text-[10px] font-bold uppercase">Gecontroleerde voorspellingen</p>
+            <p className="text-base font-semibold text-foreground tabular-nums">{overview.observations}</p>
+            <p className="text-[10px]">{overview.pending} lopen nog · {overview.expired} verlopen zonder verse koers</p>
+          </div>
+        </div>
         <div className="mt-4 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border/60 text-left text-xs uppercase tracking-wider text-muted-foreground">
                 <th className="py-2 pr-3 font-medium">Horizon</th>
-                <th className="py-2 px-3 text-right font-medium">Metingen</th>
+                <th className="py-2 px-3 text-right font-medium">Controles</th>
+                <th className="py-2 px-3 text-right font-medium">Lopend</th>
                 <th className="py-2 px-3 text-right font-medium">Richting juist</th>
                 <th className="py-2 pl-3 text-right font-medium">Gem. fout</th>
               </tr>
@@ -2002,9 +2014,10 @@ function AccuracyPanel({ result }: { result: AnalyzeResult }) {
               {summary.map((h) => (
                 <tr key={h.key} className="border-b border-border/40 last:border-0">
                   <td className="py-2 pr-3 font-medium">{h.label}</td>
-                  <td className="py-2 px-3 text-right tabular-nums">{h.samples}</td>
+                  <td className="py-2 px-3 text-right tabular-nums">{h.observations}</td>
+                  <td className="py-2 px-3 text-right tabular-nums">{h.pending}</td>
                   <td className="py-2 px-3 text-right tabular-nums">
-                    {h.sufficient && h.hitRate != null ? `${h.hitRate.toFixed(0)}%` : <span className="text-warning">onvoldoende data</span>}
+                    {h.sufficient && h.hitRate != null ? `${h.hitRate.toFixed(0)}%` : <span className="text-warning">{trackingLabel(h.observations)}</span>}
                   </td>
                   <td className="py-2 pl-3 text-right tabular-nums">
                     {h.sufficient && h.mae != null ? `${h.mae.toFixed(2)}%` : "—"}
@@ -2014,13 +2027,16 @@ function AccuracyPanel({ result }: { result: AnalyzeResult }) {
             </tbody>
           </table>
         </div>
+        <p className="mt-3 text-[10px] text-muted-foreground">
+          Elke horizon (1u, 4u, 24u, 1 week, 1 maand) kost die tijd voordat hij te toetsen is. Analyseer dit symbool later opnieuw rond het einde van een horizon, dan wordt de echte vergelijkingskoers opgehaald. Vertraagde of onbevestigde koersen tellen niet mee.
+        </p>
       </Card>
 
       <Card className="border-border/70 bg-card p-4 sm:p-5">
-        <h4 className="text-sm font-semibold">Per model</h4>
+        <h4 className="text-sm font-semibold">Per model (afzonderlijk per model en horizon geteld)</h4>
         {stats.length === 0 ? (
           <p className="mt-2 text-sm text-muted-foreground">
-            Nog geen metingen. Analyseer dit symbool regelmatig; na verloop van tijd verschijnen hier echte scores.
+            Nog niet getoetst. De modellen rekenen wél al met {result.stats.samples} historische koersdagen; controles verschijnen hier zodra voorspellingen verlopen zijn.
           </p>
         ) : (
           <div className="mt-3 divide-y divide-border/40">
@@ -2029,13 +2045,14 @@ function AccuracyPanel({ result }: { result: AnalyzeResult }) {
                 <span className="min-w-0 truncate font-medium">{s.model}</span>
                 <span className="shrink-0 text-xs text-muted-foreground">
                   {s.sufficient && s.hitRate != null && s.mae != null
-                    ? `${s.samples} metingen · hit ${s.hitRate.toFixed(0)}% · MAE ${s.mae.toFixed(1)}%`
-                    : `onvoldoende data (${s.samples}/${MIN_SAMPLES})`}
+                    ? `${s.samples} controles · richting juist ${s.hitRate.toFixed(0)}% · MAE ${s.mae.toFixed(1)}%`
+                    : trackingLabel(s.samples)}
                 </span>
               </div>
             ))}
           </div>
         )}
+
         <Button size="sm" variant="outline" className="mt-4" onClick={() => { clearForecastLog(); bump((n) => n + 1); }}>
           <Trash2 className="mr-1 h-3.5 w-3.5" /> Metingen wissen
         </Button>
