@@ -314,32 +314,39 @@ export function getModelStats(
 ): ModelStats[] {
   const arr = source ?? read();
   const sym = symbol.toUpperCase();
-  const byModel = new Map<string, { errs: number[]; apes: number[]; hits: number[] }>();
+  const byModel = new Map<
+    string,
+    { errs: number[]; apes: number[]; hits: number[]; times: Set<number> }
+  >();
   for (const f of arr) {
     if (f.symbol !== sym || f.market !== market) continue;
     for (const s of f.scored) {
       if (horizon !== "alle" && s.key !== horizon) continue;
       if (s.expired || !isFinite(s.absErrorPct)) continue;
-      const m = byModel.get(f.model) ?? { errs: [], apes: [], hits: [] };
+      const m = byModel.get(f.model) ?? { errs: [], apes: [], hits: [], times: new Set<number>() };
       m.errs.push(s.absErrorPct);
       m.apes.push(s.apePct);
       m.hits.push(s.hit ? 1 : 0);
+      m.times.add(observedOf(f));
       byModel.set(f.model, m);
     }
   }
   const out: ModelStats[] = [];
   for (const [model, m] of byModel) {
     const samples = m.errs.length;
+    const observations = m.times.size;
     const mae = m.errs.reduce((s, x) => s + x, 0) / samples;
     const mape = m.apes.reduce((s, x) => s + x, 0) / samples;
     const hitRate = (m.hits.reduce((s, x) => s + x, 0) / samples) * 100;
-    const sufficient = samples >= MIN_SAMPLES;
+    // sufficiency op basis van ONAFHANKELIJKE waarnemingen, niet horizon-controles
+    const sufficient = observations >= MIN_SAMPLES;
     const hitPart = Math.max(0, (hitRate - 40) / 60);
     const errPart = Math.max(0, 1 - Math.min(mae, 15) / 15);
     out.push({
       model,
       horizon: horizon === "alle" ? "24u" : horizon,
       samples,
+      observations,
       sufficient,
       hitRate,
       mae,
@@ -347,8 +354,9 @@ export function getModelStats(
       weight: sufficient ? Math.max(0.15, hitPart * 0.65 + errPart * 0.35) * 2 : 1,
     });
   }
-  return out.sort((a, b) => b.weight - a.weight || b.samples - a.samples);
+  return out.sort((a, b) => b.weight - a.weight || b.observations - a.observations);
 }
+
 
 /**
  * Indicatieve weegfactoren op basis van gemeten nauwkeurigheid in deze browser.
@@ -359,17 +367,24 @@ export function getEnsembleWeights(
   symbol: string,
   market: "stock" | "crypto",
   horizon: HorizonKey | "alle" = "alle",
-): { model: string; weight: number; samples: number; sufficient: boolean }[] {
+): { model: string; weight: number; samples: number; observations: number; sufficient: boolean }[] {
   const stats = new Map(getModelStats(symbol, market, horizon).map((s) => [s.model, s]));
   const raw = models.map((model) => {
     const s = stats.get(model);
-    return { model, weight: s?.weight ?? 1, samples: s?.samples ?? 0, sufficient: !!s?.sufficient };
+    return {
+      model,
+      weight: s?.weight ?? 1,
+      samples: s?.samples ?? 0,
+      observations: s?.observations ?? 0,
+      sufficient: !!s?.sufficient,
+    };
   });
   const total = raw.reduce((s, r) => s + r.weight, 0) || 1;
   return raw
     .map((r) => ({ ...r, weight: r.weight / total }))
     .sort((a, b) => b.weight - a.weight);
 }
+
 
 export type HorizonSummary = {
   key: HorizonKey;
