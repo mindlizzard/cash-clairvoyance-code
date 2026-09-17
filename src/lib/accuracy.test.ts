@@ -126,7 +126,7 @@ describe("scoren van voorspellingen", () => {
     );
     expect(changed).toBe(0);
     expect(arr[0].scored).toHaveLength(0);
-    const sum = getHorizonSummary("NVDA", "stock", arr).find((h) => h.key === "24u")!;
+    const sum = getHorizonSummary("NVDA", "stock", arr, later).find((h) => h.key === "24u")!;
     expect(sum.awaiting).toBe(1);
     expect(sum.expired).toBe(0);
   });
