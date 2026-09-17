@@ -2025,9 +2025,12 @@ function AccuracyPanel({ result }: { result: AnalyzeResult }) {
             <p className="text-base font-semibold text-foreground tabular-nums">{result.stats.samples}</p>
           </div>
           <div className="rounded-md border border-border/60 bg-secondary/30 p-2.5">
-            <p className="text-[10px] font-bold uppercase">Gecontroleerde voorspellingen</p>
+            <p className="text-[10px] font-bold uppercase">Onafhankelijke waarnemingen</p>
             <p className="text-base font-semibold text-foreground tabular-nums">{overview.observations}</p>
-            <p className="text-[10px]">{overview.pending} lopen nog · {overview.expired} verlopen zonder verse koers</p>
+            <p className="text-[10px]">
+              {overview.horizonChecks} horizon-controles · {overview.pending} lopen nog · {overview.awaiting} te beoordelen · {overview.expired} verlopen zonder betrouwbare koers
+            </p>
+
           </div>
         </div>
         <div className="mt-4 overflow-x-auto">
@@ -2062,12 +2065,13 @@ function AccuracyPanel({ result }: { result: AnalyzeResult }) {
           </table>
         </div>
         <p className="mt-3 text-[10px] text-muted-foreground">
-          Elke horizon (1u, 4u, 24u, 1 week, 1 maand) kost die tijd voordat hij te toetsen is. Analyseer dit symbool later opnieuw rond het einde van een horizon, dan wordt de echte vergelijkingskoers opgehaald. Vertraagde of onbevestigde koersen tellen niet mee.
+          Elke horizon (1u, 4u, 24u, 1 week, 1 maand) kost die tijd voordat hij te toetsen is. Analyseer dit symbool later opnieuw rond het einde van een horizon, dan wordt de echte vergelijkingskoers opgehaald. Koers en tijdstip komen altijd uit dezelfde waarneming; vertraagde of onbevestigde koersen tellen niet mee. Met alleen een dagslotkoers worden 1u en 4u niet getoetst. Eén basismoment dat 24u + 1 week + 1 maand oplevert, telt als één waarneming en drie horizon-controles.
         </p>
       </Card>
 
       <Card className="border-border/70 bg-card p-4 sm:p-5">
-        <h4 className="text-sm font-semibold">Per model (afzonderlijk per model en horizon geteld)</h4>
+        <h4 className="text-sm font-semibold">Per model (horizon-controles per model apart geteld)</h4>
+
         {stats.length === 0 ? (
           <p className="mt-2 text-sm text-muted-foreground">
             Nog niet getoetst. De modellen rekenen wél al met {result.stats.samples} historische koersdagen; controles verschijnen hier zodra voorspellingen verlopen zijn.
