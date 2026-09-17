@@ -159,26 +159,43 @@ function Home() {
   // Accuracy tracking: score oude voorspellingen, log nieuwe per model en horizon
   useEffect(() => {
     if (!result) return;
-    const price = result.indicators.price;
     const fresh = result.dataFreshness;
-    const stale = !!fresh?.stale;
-    const priceAt = fresh?.lastPriceAt ? new Date(fresh.lastPriceAt).getTime() : undefined;
+    const ref = fresh?.reference;
+    // Prijs én tijdstip komen uit dezelfde waarneming (candle/provider).
+    const refPrice = ref?.price;
+    const refAt = ref?.at ? Date.parse(ref.at) : NaN;
+    const stale = !!fresh?.stale || fresh?.trustworthy === false;
+    const minHorizonHours = ref?.minHorizonHours ?? 24;
+    const trustworthy =
+      !!refPrice && isFinite(refPrice) && refPrice > 0 && isFinite(refAt) && !stale;
+
+    // Paper trading gebruikt de laatst bekende koers (mag ook dagslot zijn).
+    updatePaperTrades(result.symbol, result.market, result.indicators.price);
+    if (!trustworthy) return; // geen betrouwbaar prijs+tijd-paar → niets loggen/scoren
+
     scoreOpenForecasts({
       symbol: result.symbol,
       market: result.market,
-      currentPrice: price,
-      priceAt: priceAt && isFinite(priceAt) ? priceAt : undefined,
-      stale,
+      currentPrice: refPrice,
+      priceAt: refAt,
+      sourceKind: ref!.kind,
+      minHorizonHours,
+      stale: false,
     });
-    updatePaperTrades(result.symbol, result.market, price);
     const hour = (h: number) =>
       result.hourlyForecasts.find((row) => row.hours === h)?.expectedPct ?? 0;
+    const intradayBased = ref!.kind === "intraday";
     logForecasts({
       symbol: result.symbol,
       market: result.market,
-      price,
-      stale,
+      price: refPrice,
+      observedAt: refAt,
+      sourceKind: ref!.kind,
+      sourceLabel: ref!.source,
+      minHorizonHours,
+      stale: false,
       entries: [
+
 
         ...result.ai.forecasts.map((f) => ({
           model: f.model,
