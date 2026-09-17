@@ -106,22 +106,45 @@ export function onAccuracyChange(handler: () => void) {
 export type LogArgs = {
   symbol: string;
   market: "stock" | "crypto";
+  /** basiskoers uit dezelfde waarneming als observedAt */
   price: number;
+  /** tijdstip van die waarneming (ms) */
+  observedAt: number;
+  sourceKind: "intraday" | "dagslot";
+  sourceLabel?: string;
   /** Vertraagde/onbevestigde koers → niet loggen (anders meten we ruis). */
   stale?: boolean;
+  /** horizons korter dan dit zijn met deze bron niet eerlijk toetsbaar */
+  minHorizonHours?: number;
   entries: { model: string; predictions: Prediction[] }[];
 };
 
 /**
- * Pure variant: voegt alleen die horizons toe die genoeg afstand hebben tot de
- * vorige observatie. Herhaald refreshen levert dus geen extra "metingen" op.
+ * Pure variant. Legt alleen vast wat toetsbaar is:
+ *  - basiskoers en tijdstip komen uit dezelfde waarneming;
+ *  - verouderde/onbevestigde basis → niets loggen;
+ *  - horizons korter dan minHorizonHours worden overgeslagen (dagslot ≠ 1u);
+ *  - dezelfde waarneming (zelfde observedAt) nooit twee keer;
+ *  - herhaald refreshen binnen de minimale afstand levert geen extra observatie.
  */
 export function appendForecasts(
   arr: LoggedForecast[],
   args: LogArgs,
   now: number,
 ): { arr: LoggedForecast[]; added: number } {
-  if (!args.price || !isFinite(args.price) || args.stale) return { arr, added: 0 };
+  const observedAt = args.observedAt;
+  if (
+    !args.price ||
+    !isFinite(args.price) ||
+    args.price <= 0 ||
+    !isFinite(observedAt) ||
+    observedAt <= 0 ||
+    observedAt > now + 5 * 60_000 ||
+    args.stale
+  ) {
+    return { arr, added: 0 };
+  }
+  const minH = args.minHorizonHours ?? 0;
   const sym = args.symbol.toUpperCase();
   const out = arr.slice();
   let added = 0;
@@ -130,15 +153,16 @@ export function appendForecasts(
     for (const p of e.predictions) {
       if (!isFinite(p.predictedPct)) continue;
       const h = HORIZONS.find((x) => x.key === p.key);
-      if (!h) continue;
+      if (!h || h.hours < minH) continue;
       const spacing = minSpacingHours(h.hours) * 3_600_000;
       const dup = out.some(
         (f) =>
           f.symbol === sym &&
           f.market === args.market &&
           f.model === e.model &&
-          now - f.createdAt < spacing &&
-          f.predictions.some((q) => q.key === p.key),
+          f.predictions.some((q) => q.key === p.key) &&
+          // zelfde waarneming (bv. dezelfde candle uit cache) of te kort na de vorige
+          (observedOf(f) === observedAt || observedAt - observedOf(f) < spacing),
       );
       if (!dup) fresh.push(p);
     }
@@ -149,7 +173,10 @@ export function appendForecasts(
       market: args.market,
       model: e.model,
       createdAt: now,
-      priceAt: args.price,
+      observedAt,
+      basePrice: args.price,
+      sourceKind: args.sourceKind,
+      sourceLabel: args.sourceLabel,
       predictions: fresh,
       scored: [],
     });
@@ -168,16 +195,21 @@ export function logForecasts(args: LogArgs) {
 export type ScoreArgs = {
   symbol: string;
   market: "stock" | "crypto";
+  /** vergelijkingskoers uit dezelfde waarneming als priceAt */
   currentPrice: number;
-  /** Tijdstip van de vergelijkingskoers (niet het moment van kijken). */
-  priceAt?: number;
+  /** tijdstip van die vergelijkingskoers (ms) — verplicht voor betrouwbaar meten */
+  priceAt: number;
+  sourceKind?: "intraday" | "dagslot";
   /** Vertraagde/onbevestigde koers → niet scoren. */
   stale?: boolean;
+  /** horizons korter dan dit kunnen met deze bron niet betrouwbaar gemeten worden */
+  minHorizonHours?: number;
 };
 
 /**
- * Pure variant. Scoort uitsluitend binnen het meetvenster rond de horizon;
- * te late horizons worden als "expired" gemarkeerd en tellen nooit mee.
+ * Pure variant. Scoort uitsluitend binnen het meetvenster rond de horizon en
+ * uitsluitend met een betrouwbaar prijs+tijd-paar. Zonder zo'n paar wordt er
+ * niets gescoord (de voorspelling blijft "te beoordelen").
  */
 export function scoreForecasts(
   arr: LoggedForecast[],
@@ -185,31 +217,47 @@ export function scoreForecasts(
   now: number,
 ): { arr: LoggedForecast[]; changed: number } {
   const sym = args.symbol.toUpperCase();
-  const refTime = args.priceAt ?? now;
+  const refTime = args.priceAt;
+  const usable =
+    !args.stale &&
+    isFinite(args.currentPrice) &&
+    args.currentPrice > 0 &&
+    isFinite(refTime) &&
+    refTime > 0 &&
+    refTime <= now + 5 * 60_000;
   let changed = 0;
   const out = arr.map((f) => ({ ...f, scored: f.scored.slice() }));
   for (const f of out) {
-    if (f.symbol !== sym || f.market !== args.market || !f.priceAt) continue;
-    const ageH = (refTime - f.createdAt) / 3_600_000;
-    if (ageH <= 0) continue;
-    const actualPct = ((args.currentPrice - f.priceAt) / f.priceAt) * 100;
+    if (f.symbol !== sym || f.market !== args.market || !baseOf(f)) continue;
+    const base = baseOf(f);
+    const created = observedOf(f);
+    const ageH = (refTime - created) / 3_600_000;
+    const wallAgeH = (now - created) / 3_600_000;
+    const actualPct = ((args.currentPrice - base) / base) * 100;
     for (const p of f.predictions) {
       const h = HORIZONS.find((x) => x.key === p.key);
-      if (!h || ageH < h.hours) continue;
+      if (!h) continue;
       if (f.scored.some((s) => s.key === p.key)) continue;
-      const tooLate = ageH > h.hours + scoreWindowHours(h.hours);
-      if (tooLate || args.stale || !args.currentPrice || !isFinite(args.currentPrice)) {
-        // niet meetbaar: markeer alleen als verlopen zodra het venster voorbij is
-        if (!tooLate) continue;
+      const grace = scoreWindowHours(h.hours);
+      // Definitief verlopen: het meetvenster is verstreken volgens de klok en
+      // er is nooit een bruikbaar prijs+tijd-paar binnen dat venster geweest.
+      const windowClosed = wallAgeH > h.hours + grace;
+      const measurable =
+        usable &&
+        ageH >= h.hours &&
+        ageH <= h.hours + grace &&
+        (args.minHorizonHours == null || h.hours >= args.minHorizonHours);
+      if (!measurable) {
+        if (!windowClosed) continue; // nog te beoordelen
         f.scored.push({
           key: p.key,
-          actualPct,
+          actualPct: usable ? actualPct : NaN,
           predictedPct: p.predictedPct,
           absErrorPct: NaN,
           apePct: NaN,
           hit: false,
           scoredAt: now,
-          ageHours: ageH,
+          ageHours: wallAgeH,
           expired: true,
         });
         changed++;
@@ -235,9 +283,9 @@ export function scoreForecasts(
   return { arr: out, changed };
 }
 
-/** Score verstreken horizons tegen de huidige (verse) koers. */
+/** Score verstreken horizons tegen een betrouwbare vergelijkingskoers. */
 export function scoreOpenForecasts(args: ScoreArgs) {
-  if (typeof window === "undefined" || !args.currentPrice) return;
+  if (typeof window === "undefined") return;
   const { arr, changed } = scoreForecasts(read(), args, Date.now());
   if (changed) write(arr);
 }
@@ -245,13 +293,17 @@ export function scoreOpenForecasts(args: ScoreArgs) {
 export type ModelStats = {
   model: string;
   horizon: HorizonKey;
+  /** aantal gescoorde horizon-controles (1 basismoment kan 24u+1w+1m leveren) */
   samples: number;
+  /** unieke basiswaarnemingen — dit bepaalt of er genoeg bewijs is */
+  observations: number;
   sufficient: boolean;
   hitRate: number | null;
   mae: number | null;
   mape: number | null;
   weight: number; // indicatief relatief gewicht (1 = neutraal)
 };
+
 
 /** Statistieken per model voor één horizon (of alle horizons samen). */
 export function getModelStats(
