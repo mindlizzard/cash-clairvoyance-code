@@ -208,15 +208,21 @@ function Home() {
         {
           model: "Ensemble (handelsplan)",
           predictions: [
-            { key: "1u" as const, predictedPct: hour(1) },
-            { key: "4u" as const, predictedPct: hour(4) },
+            // 1u/4u alleen als de basis een echte, verse intraday-candle is
+            ...(intradayBased && result.hourlyForecasts.every((r) => r.source === "intraday")
+              ? [
+                  { key: "1u" as const, predictedPct: hour(1) },
+                  { key: "4u" as const, predictedPct: hour(4) },
+                ]
+              : []),
             { key: "24u" as const, predictedPct: hour(24) },
             { key: "1w" as const, predictedPct: result.ensemble.ensembleWeekPct },
           ],
         },
       ],
     });
-  }, [result?.symbol, result?.market, result?.indicators.price]);
+  }, [result?.symbol, result?.market, result?.dataFreshness?.reference?.at]);
+
 
   const submit = (e?: React.FormEvent) => {
     e?.preventDefault();
