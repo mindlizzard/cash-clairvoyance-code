@@ -43,12 +43,16 @@ import {
   getModelStats,
   getEnsembleWeights,
   getHorizonSummary,
+  getTrackingOverview,
   measuredConfidence,
   clearForecastLog,
   onAccuracyChange,
+  trackingLabel,
+  ACCURACY_EXPLAINER,
   MIN_SAMPLES,
   type ModelStats,
 } from "@/lib/accuracy";
+
 import {
   openPaperTrade,
   closePaperTrade,
@@ -157,7 +161,16 @@ function Home() {
   useEffect(() => {
     if (!result) return;
     const price = result.indicators.price;
-    scoreOpenForecasts({ symbol: result.symbol, market: result.market, currentPrice: price });
+    const fresh = result.dataFreshness;
+    const stale = !!fresh?.stale;
+    const priceAt = fresh?.lastPriceAt ? new Date(fresh.lastPriceAt).getTime() : undefined;
+    scoreOpenForecasts({
+      symbol: result.symbol,
+      market: result.market,
+      currentPrice: price,
+      priceAt: priceAt && isFinite(priceAt) ? priceAt : undefined,
+      stale,
+    });
     updatePaperTrades(result.symbol, result.market, price);
     const hour = (h: number) =>
       result.hourlyForecasts.find((row) => row.hours === h)?.expectedPct ?? 0;
@@ -165,7 +178,9 @@ function Home() {
       symbol: result.symbol,
       market: result.market,
       price,
+      stale,
       entries: [
+
         ...result.ai.forecasts.map((f) => ({
           model: f.model,
           predictions: [
