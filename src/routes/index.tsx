@@ -49,7 +49,6 @@ import {
   onAccuracyChange,
   trackingLabel,
   ACCURACY_EXPLAINER,
-  MIN_SAMPLES,
   type ModelStats,
 } from "@/lib/accuracy";
 
