@@ -1166,23 +1166,73 @@ export const analyzeAsset = createServerFn({ method: "POST" })
       const minutes = now.getUTCHours() * 60 + now.getUTCMinutes();
       return minutes >= 13 * 60 + 30 && minutes <= 20 * 60;
     })();
-    const lastPriceAt =
-      intradayCtx?.lastAt ?? Date.parse(`${candles[candles.length - 1].date}T21:00:00Z`);
-    const ageMinutes = Math.max(0, Math.round((Date.now() - lastPriceAt) / 60_000));
+    // Prijs en tijdstip MOETEN uit dezelfde waarneming komen. Intraday alleen
+    // als de laatste candle echt vers is; anders de dagslotkoers met de
+    // sessiedatum (geen verzonnen kloktijd).
+    const lastCandle = candles[candles.length - 1];
+    const intradayAgeMin = intradayCtx
+      ? Math.max(0, Math.round((Date.now() - intradayCtx.lastAt) / 60_000))
+      : Infinity;
+    const intradayFresh =
+      !!intradayCtx &&
+      isFinite(intradayCtx.lastAt) &&
+      intradayCtx.lastAt <= Date.now() + 5 * 60_000 &&
+      intradayAgeMin <= Math.max(45, (intradayCtx.intervalMinutes ?? 5) * 3);
+
+    const reference = intradayFresh
+      ? {
+          price: intradayCtx!.price,
+          at: new Date(intradayCtx!.lastAt).toISOString(),
+          kind: "intraday" as const,
+          precise: true,
+          /** intraday candle → ook 1u/4u zijn toetsbaar */
+          minHorizonHours: 1,
+          source: intradayRaw?.label ?? `${intradayCtx!.intervalMinutes}m`,
+        }
+      : {
+          price: closes[closes.length - 1],
+          // sessiedatum van de slotcandle; exacte kloktijd is niet bekend
+          at: new Date(`${lastCandle.date}T00:00:00Z`).toISOString(),
+          kind: "dagslot" as const,
+          precise: false,
+          /** dagslot: alleen horizons van 24u en langer zijn eerlijk toetsbaar */
+          minHorizonHours: 24,
+          source: data.market === "stock" ? "Yahoo Finance (dagslot)" : "CoinGecko (dagslot)",
+        };
+
+    const lastPriceAt = Date.parse(reference.at);
+    const referenceAgeMinutes = Math.max(0, Math.round((Date.now() - lastPriceAt) / 60_000));
+    const ageMinutes = intradayFresh ? intradayAgeMin : referenceAgeMinutes;
+    const staleReference = intradayFresh
+      ? intradayAgeMin > Math.max(45, (intradayCtx!.intervalMinutes ?? 5) * 3)
+      : referenceAgeMinutes > 60 * 24 * (data.market === "crypto" ? 2 : 5);
     const dataFreshness = {
-      lastPriceAt: new Date(lastPriceAt).toISOString(),
+      lastPriceAt: reference.at,
       ageMinutes,
       marketOpen,
       intradayInterval: intradayRaw?.label ?? null,
       intradaySamples: intradayCtx?.samples ?? 0,
-      stale: marketOpen ? ageMinutes > 45 : ageMinutes > 60 * 24 * 4,
+      stale: staleReference,
+      /** prijs + tijdstip uit dezelfde candle/provider */
+      reference: {
+        price: +reference.price.toFixed(6),
+        at: reference.at,
+        kind: reference.kind,
+        precise: reference.precise,
+        minHorizonHours: reference.minHorizonHours,
+        source: reference.source,
+      },
+      /** false → niet loggen en niet scoren; geen onbetrouwbare metingen */
+      trustworthy: !staleReference && isFinite(reference.price) && reference.price > 0,
       source: (() => {
+        if (!intradayFresh) return reference.source;
         const label = intradayRaw?.label ?? "";
         if (label.includes("Nasdaq")) return "Nasdaq (intraday)";
         if (label.includes("Binance")) return "Binance (intraday)";
-        return data.market === "stock" ? "Yahoo Finance" : "CoinGecko";
+        return data.market === "stock" ? "Yahoo Finance (intraday)" : "CoinGecko (intraday)";
       })(),
     };
+
 
     return {
       ok: true as const,
