@@ -912,6 +912,9 @@ function PortfolioPanel({
         </Card>
       )}
 
+      <BunqImportCard />
+      <ImportedPositionsCard />
+
       <Card className="border-border/60 bg-card p-5">
         <div className="mb-4 flex items-center justify-between">
           <div>
