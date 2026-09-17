@@ -2083,7 +2083,7 @@ function AccuracyPanel({ result }: { result: AnalyzeResult }) {
                 <span className="min-w-0 truncate font-medium">{s.model}</span>
                 <span className="shrink-0 text-xs text-muted-foreground">
                   {s.sufficient && s.hitRate != null && s.mae != null
-                    ? `${s.samples} controles · richting juist ${s.hitRate.toFixed(0)}% · MAE ${s.mae.toFixed(1)}%`
+                    ? `${s.observations} waarnemingen · ${s.samples} horizon-controles · richting juist ${s.hitRate.toFixed(0)}% · MAE ${s.mae.toFixed(1)}%`
                     : trackingLabel(s.samples)}
                 </span>
               </div>
