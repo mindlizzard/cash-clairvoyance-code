@@ -390,13 +390,15 @@ export type HorizonSummary = {
   key: HorizonKey;
   label: string;
   hours: number;
-  /** unieke tijdstippen met een geldige meting (niet 10 modellen = 10 metingen) */
+  /** unieke basiswaarnemingen met een geldige meting (10 modellen ≠ 10 metingen) */
   observations: number;
-  /** aantal model-metingen (per model afzonderlijk gescoord) */
+  /** aantal gescoorde horizon-controles (per model afzonderlijk) */
   modelChecks: number;
-  /** nog lopende voorspellingen: horizon nog niet verstreken */
+  /** horizon nog niet verstreken */
   pending: number;
-  /** verlopen zonder geldige vergelijkingskoers */
+  /** horizon verstreken, nog binnen het meetvenster → te beoordelen */
+  awaiting: number;
+  /** meetvenster voorbij zonder betrouwbare vergelijkingskoers */
   expired: number;
   sufficient: boolean;
   hitRate: number | null;
@@ -417,6 +419,7 @@ export function getHorizonSummary(
     const times = new Set<number>();
     let modelChecks = 0;
     let pending = 0;
+    let awaiting = 0;
     let expired = 0;
     let hits = 0;
     let errSum = 0;
@@ -424,8 +427,9 @@ export function getHorizonSummary(
       if (!f.predictions.some((p) => p.key === h.key)) continue;
       const s = f.scored.find((x) => x.key === h.key);
       if (!s) {
-        const ageH = (now - f.createdAt) / 3_600_000;
+        const ageH = (now - observedOf(f)) / 3_600_000;
         if (ageH < h.hours) pending++;
+        else if (ageH <= h.hours + scoreWindowHours(h.hours)) awaiting++;
         else expired++;
         continue;
       }
@@ -434,7 +438,7 @@ export function getHorizonSummary(
         continue;
       }
       modelChecks++;
-      times.add(f.createdAt);
+      times.add(observedOf(f));
       hits += s.hit ? 1 : 0;
       errSum += s.absErrorPct;
     }
@@ -445,6 +449,7 @@ export function getHorizonSummary(
       observations,
       modelChecks,
       pending,
+      awaiting,
       expired,
       sufficient,
       hitRate: modelChecks ? (hits / modelChecks) * 100 : null,
@@ -454,9 +459,12 @@ export function getHorizonSummary(
 }
 
 export type TrackingOverview = {
+  /** unieke basiswaarnemingen over alle horizons (niet de som per horizon) */
   observations: number;
-  modelChecks: number;
+  /** horizon-controles: één basismoment kan 24u + 1w + 1m opleveren */
+  horizonChecks: number;
   pending: number;
+  awaiting: number;
   expired: number;
 };
 
@@ -468,17 +476,25 @@ export function getTrackingOverview(
   now: number = Date.now(),
 ): TrackingOverview {
   const rows = getHorizonSummary(symbol, market, source, now);
+  const arr = (source ?? read()).filter(
+    (f) => f.symbol === symbol.toUpperCase() && f.market === market,
+  );
+  const uniqueTimes = new Set<number>();
+  for (const f of arr) {
+    if (f.scored.some((s) => !s.expired && isFinite(s.absErrorPct))) uniqueTimes.add(observedOf(f));
+  }
   return {
-    observations: rows.reduce((s, r) => s + r.observations, 0),
-    modelChecks: rows.reduce((s, r) => s + r.modelChecks, 0),
+    observations: uniqueTimes.size,
+    horizonChecks: rows.reduce((s, r) => s + r.modelChecks, 0),
     pending: rows.reduce((s, r) => s + r.pending, 0),
+    awaiting: rows.reduce((s, r) => s + r.awaiting, 0),
     expired: rows.reduce((s, r) => s + r.expired, 0),
   };
 }
 
 /**
- * Gemeten betrouwbaarheid; null zolang er te weinig ONAFHANKELIJKE metingen
- * (unieke tijdstippen) zijn.
+ * Gemeten betrouwbaarheid; null zolang er te weinig ONAFHANKELIJKE waarnemingen
+ * zijn (unieke basistijdstippen, niet het aantal horizon-controles).
  */
 export function measuredConfidence(
   symbol: string,
@@ -493,6 +509,7 @@ export function measuredConfidence(
   const hit = sel.reduce((s, r) => s + (r.hitRate ?? 0) * r.modelChecks, 0) / checks;
   return { value: hit, samples: observations };
 }
+
 
 /** Tekst voor een modelrij: nooit suggereren dat koersdata ontbreekt. */
 export function trackingLabel(samples: number) {
