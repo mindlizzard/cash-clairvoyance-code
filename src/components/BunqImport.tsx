@@ -13,7 +13,9 @@ import {
 } from "@/lib/bunq-import";
 
 const eur = (n: number) =>
-  `€${n.toLocaleString("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  `${n < 0 ? "-" : ""}€${Math.abs(n).toLocaleString("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/** Bedrag met expliciet teken, voor winst/verlies. */
+const eurSigned = (n: number) => `${n >= 0 ? "+" : ""}${eur(n)}`;
 
 function download(name: string, text: string) {
   const blob = new Blob([text], { type: "application/json" });
@@ -192,8 +194,7 @@ export function BunqImportCard() {
               <li>Totale snapshotwaarde: {eur(parsed.totals.valueEUR)}</li>
               <li>Totale kostprijs: {eur(parsed.totals.costBasisEUR)}</li>
               <li>
-                Openstaande winst/verlies: {parsed.totals.unrealizedPnLEUR >= 0 ? "+" : ""}
-                {eur(parsed.totals.unrealizedPnLEUR)}
+                Openstaande winst/verlies: {eurSigned(parsed.totals.unrealizedPnLEUR)}
               </li>
               <li>
                 Bundel all-time winst (apart, niet vermengd): {eur(parsed.meta.bundleOverview.allTimeProfitEUR)}
@@ -241,8 +242,7 @@ export function BunqImportCard() {
                     <td
                       className={`py-2 px-3 text-right tabular-nums ${p.unrealizedPnLEUR >= 0 ? "text-accent" : "text-destructive"}`}
                     >
-                      {p.unrealizedPnLEUR >= 0 ? "+" : ""}
-                      {eur(p.unrealizedPnLEUR)}
+                      {eurSigned(p.unrealizedPnLEUR)}
                     </td>
                   </tr>
                 ))}
@@ -383,8 +383,7 @@ export function ImportedPositionsCard() {
                 <td
                   className={`py-2 px-3 text-right tabular-nums ${p.unrealizedPnLEUR >= 0 ? "text-accent" : "text-destructive"}`}
                 >
-                  {p.unrealizedPnLEUR >= 0 ? "+" : ""}
-                  {eur(p.unrealizedPnLEUR)}
+                  {eurSigned(p.unrealizedPnLEUR)}
                 </td>
                 <td className="py-2 pl-3 text-right">
                   <Button
@@ -405,8 +404,7 @@ export function ImportedPositionsCard() {
               <td className="py-2 px-3 text-right tabular-nums">{eur(totals.value)}</td>
               <td className="py-2 px-3 text-right tabular-nums">{eur(totals.cost)}</td>
               <td className={`py-2 px-3 text-right tabular-nums ${totals.pnl >= 0 ? "text-accent" : "text-destructive"}`}>
-                {totals.pnl >= 0 ? "+" : ""}
-                {eur(totals.pnl)}
+                {eurSigned(totals.pnl)}
               </td>
               <td />
             </tr>
