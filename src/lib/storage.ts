@@ -27,15 +27,51 @@ export type AlertRule = {
   triggeredAt?: number;
 };
 
+/** Meta van de laatst toegepaste bunq-snapshotimport (geen persoonlijke bedragen buiten localStorage). */
+export type ImportMeta = {
+  source: string;
+  snapshotDate: string;
+  snapshotTimeLocal: string;
+  bundleValueEUR: number;
+  bundleAllTimeProfitEUR: number;
+  bundleObservedAtLocal: string;
+  scope: string;
+  importedAt: number;
+};
+
 export type Store = {
   watchlist: WatchItem[];
   portfolio: Position[];
   alerts: AlertRule[];
+  /** Parallel importmodel: raakt handmatige posities, alerts en watchlist niet aan. */
+  imported: ImportedPositionRecord[];
+  importMeta: ImportMeta | null;
+};
+
+/** Losse structuur zodat storage niet van bunq-import hoeft te importeren (voorkomt cyclus). */
+export type ImportedPositionRecord = {
+  id: string;
+  key: string;
+  name: string;
+  symbol: string | null;
+  market: Market | null;
+  quantity: number;
+  snapshotValueEUR: number;
+  unrealizedPnLEUR: number;
+  costBasisEUR: number;
+  currency: "EUR";
+  fxStatus: "eur-native" | "unverified";
+  snapshotTimestamp: number;
+  observedAtLocal: string;
+  snapshotDate: string;
+  source: string;
+  importedAt: number;
+  warnings: string[];
 };
 
 const KEY = "beursziener.v1";
 const EVENT = "beursziener-store";
-const empty: Store = { watchlist: [], portfolio: [], alerts: [] };
+const empty: Store = { watchlist: [], portfolio: [], alerts: [], imported: [], importMeta: null };
 
 function read(): Store {
   if (typeof window === "undefined") return empty;
@@ -47,10 +83,16 @@ function read(): Store {
       watchlist: Array.isArray(parsed.watchlist) ? parsed.watchlist : [],
       portfolio: Array.isArray(parsed.portfolio) ? parsed.portfolio : [],
       alerts: Array.isArray(parsed.alerts) ? parsed.alerts : [],
+      imported: Array.isArray(parsed.imported) ? parsed.imported : [],
+      importMeta: parsed.importMeta && typeof parsed.importMeta === "object" ? parsed.importMeta : null,
     };
   } catch {
     return empty;
   }
+}
+
+export function readStore(): Store {
+  return read();
 }
 
 function write(s: Store) {
