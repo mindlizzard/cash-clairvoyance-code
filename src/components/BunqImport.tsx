@@ -117,10 +117,15 @@ export function BunqImportCard() {
             const f = e.target.files?.[0];
             if (!f) return;
             const text = await f.text();
-            if (!window.confirm("Backup herstellen? Je huidige lokale gegevens worden overschreven.")) return;
-            setDone(store.restoreBackup(text) ? "Backup hersteld." : null);
-            if (!store.restoreBackup(text)) setErrors(["Deze backup kon niet gelezen worden."]);
-            e.target.value = "";
+            const target = e.target;
+            if (!window.confirm("Backup herstellen? Je huidige lokale gegevens worden overschreven.")) {
+              target.value = "";
+              return;
+            }
+            const ok = store.restoreBackup(text);
+            setErrors(ok ? [] : ["Deze backup kon niet gelezen worden."]);
+            setDone(ok ? "Backup hersteld." : null);
+            target.value = "";
           }}
         />
       </div>
