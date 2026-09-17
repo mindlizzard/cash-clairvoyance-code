@@ -55,11 +55,31 @@ export type LoggedForecast = {
   symbol: string;
   market: "stock" | "crypto";
   model: string;
+  /** moment van vastleggen (klok) */
   createdAt: number;
-  priceAt: number;
+  /** tijdstip van de basiswaarneming zelf (candle/provider) */
+  observedAt: number;
+  /** basiskoers uit DEZELFDE waarneming als observedAt */
+  basePrice: number;
+  /** herkomst van het prijs+tijd-paar, bv. "5m (Nasdaq)" of "dagslot" */
+  sourceKind: "intraday" | "dagslot";
+  sourceLabel?: string;
   predictions: Prediction[];
   scored: Scored[];
+  /** legacy veld (bevatte de basiskoers) */
+  priceAt?: number;
 };
+
+/** Basiskoers, met terugvalwaarde voor eerder opgeslagen records. */
+function baseOf(f: LoggedForecast) {
+  return f.basePrice ?? f.priceAt ?? 0;
+}
+
+/** Tijdstip van de basiswaarneming, met terugval op het logmoment. */
+function observedOf(f: LoggedForecast) {
+  return f.observedAt ?? f.createdAt;
+}
+
 
 function read(): LoggedForecast[] {
   if (typeof window === "undefined") return [];
