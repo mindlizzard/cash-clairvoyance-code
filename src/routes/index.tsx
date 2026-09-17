@@ -399,6 +399,9 @@ function TradePlanPanel({ result }: { result: AnalyzeResult }) {
   ] as const;
   const tone = plan.signal === "BUY" ? "text-accent border-accent/40 bg-accent/10" : plan.signal === "SELL" ? "text-destructive border-destructive/40 bg-destructive/10" : plan.signal === "NO_TRADE" ? "text-warning border-warning/40 bg-warning/10" : "text-primary border-primary/40 bg-primary/10";
   const measured = measuredConfidence(result.symbol, result.market, "1w");
+  const measuredSamples =
+    getHorizonSummary(result.symbol, result.market).find((h) => h.key === "1w")?.observations ?? 0;
+
 
   return (
     <div className="space-y-4">
@@ -407,14 +410,18 @@ function TradePlanPanel({ result }: { result: AnalyzeResult }) {
           <div className="min-w-0"><p className="text-[10px] font-bold uppercase text-muted-foreground">Handelsplan (kwantitatief)</p><div className={`mt-1 inline-flex rounded-md border px-3 py-1.5 text-2xl font-bold ${tone}`}>{plan.signal.replace("_", " ")}</div></div>
           <div className="text-right"><p className="text-[10px] font-bold uppercase text-muted-foreground">Modelmatig</p><p className="text-2xl font-bold tabular-nums">{plan.confidence}%</p><p className="text-[10px] capitalize text-muted-foreground">Risico {plan.riskLevel}</p></div>
         </div>
-        <p className="mt-3 text-xs text-muted-foreground">
-          Gemeten hit-rate (1 week):{" "}
-          {measured ? (
-            <span className="font-semibold text-foreground">{measured.value.toFixed(0)}% over {measured.samples} metingen</span>
-          ) : (
-            <span className="font-semibold text-warning">onvoldoende data (min. {MIN_SAMPLES} metingen)</span>
-          )}
-        </p>
+        <div className="mt-3 rounded-md border border-border/60 bg-secondary/30 p-2.5 text-xs text-muted-foreground">
+          <p>
+            Gemeten richting-score (1 week):{" "}
+            {measured ? (
+              <span className="font-semibold text-foreground">{measured.value.toFixed(0)}% over {measured.samples} gecontroleerde voorspellingen</span>
+            ) : (
+              <span className="font-semibold text-warning">{trackingLabel(measuredSamples)}</span>
+            )}
+          </p>
+          <p className="mt-1">{ACCURACY_EXPLAINER}</p>
+        </div>
+
         {plan.eventRisk && <p className="mt-4 flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 p-2 text-xs text-warning"><AlertTriangle className="h-4 w-4" />{plan.eventRisk}</p>}
         {plan.noTradeReasons.length > 0 && (
           <div className="mt-4 rounded-md border border-warning/40 bg-warning/5 p-3">
@@ -723,9 +730,28 @@ function AnalysePanel({
       {section === "models" && <>
         <Card className="border-border/70 bg-card p-4 sm:p-5">
           <div className="mb-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-            <div><h3 className="text-lg font-semibold">Modelensemble</h3><p className="text-xs text-muted-foreground">Modellen met de beste gemeten hit-rate voor dit symbool tellen zwaarder mee. Zonder metingen weegt elk model gelijk.</p></div>
+            <div><h3 className="text-lg font-semibold">Modelensemble</h3><p className="text-xs text-muted-foreground">Alle modellen wegen in het live-signaal even zwaar. De weegfactor hieronder is alleen indicatief (op basis van lokaal gemeten controles) en wordt nog niet toegepast op het live ensemble.</p></div>
             <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">Inleg €</span><Input type="number" min={0} value={amount} onChange={(e) => setAmount(e.target.value)} className="w-28" /></div>
           </div>
+          <div className="mb-3 rounded-md border border-border/60 bg-secondary/30 p-3 text-xs text-muted-foreground">
+            <p>{ACCURACY_EXPLAINER}</p>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <div>
+                <p className="text-[10px] font-bold uppercase">Historische koersdagen</p>
+                <p className="text-sm font-semibold text-foreground tabular-nums">{result.stats.samples}</p>
+                <p className="text-[10px]">gebruikt voor de huidige verwachtingen</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase">Gecontroleerde voorspellingen</p>
+                <p className="text-sm font-semibold text-foreground tabular-nums">{getTrackingOverview(result.symbol, result.market).observations}</p>
+                <p className="text-[10px]">{getTrackingOverview(result.symbol, result.market).pending} lopen nog</p>
+              </div>
+            </div>
+            <p className="mt-2">
+              Controle van 1u/4u/24u/1w/1m kost tijd: analyseer dit symbool later opnieuw, zodat er een echte vergelijkingskoers wordt opgehaald rond het einde van elke horizon.
+            </p>
+          </div>
+
           <ForecastTable
             forecasts={result.ai.forecasts}
             amount={Number(amount) || 0}
@@ -1519,10 +1545,11 @@ function ForecastTable({
                 <div>{f.model}</div>
                 <div className="text-[10px] text-muted-foreground">
                   {a && a.sufficient && a.hitRate != null && a.mae != null
-                    ? `${a.samples} metingen · hit ${a.hitRate.toFixed(0)}% · MAE ${a.mae.toFixed(1)}%`
-                    : `onvoldoende data (${a?.samples ?? 0}/${MIN_SAMPLES})`}
-                  {w != null && ` · gewicht ${(w * 100).toFixed(0)}%`}
+                    ? `${a.samples} controles · richting juist ${a.hitRate.toFixed(0)}% · MAE ${a.mae.toFixed(1)}%`
+                    : trackingLabel(a?.samples ?? 0)}
+                  {w != null && ` · weegfactor (indicatief) ${(w * 100).toFixed(0)}%`}
                 </div>
+
               </td>
               <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.day)}`}>{fmtPct(f.day)}<span className="text-[10px] text-muted-foreground">{fmtBand(f.bandDay)}</span></td>
               <td className={`py-2 px-3 text-right tabular-nums ${toneCls(f.week)}`}>{fmtPct(f.week)}<span className="text-[10px] text-muted-foreground">{fmtBand(f.bandWeek)}</span></td>
