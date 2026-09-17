@@ -641,8 +641,12 @@ function AnalysePanel({
               {result.dataFreshness.marketOpen ? "Markt open" : "Markt gesloten"}
             </span>
             <span className="text-muted-foreground">
-              Laatste koers {new Date(result.dataFreshness.lastPriceAt).toLocaleString("nl-NL", { dateStyle: "short", timeStyle: "short" })} · {result.dataFreshness.source}
+              {result.dataFreshness.reference?.kind === "dagslot"
+                ? `Slotkoers ${new Date(result.dataFreshness.reference.at).toLocaleDateString("nl-NL", { dateStyle: "short" })}`
+                : `Laatste koers ${new Date(result.dataFreshness.lastPriceAt).toLocaleString("nl-NL", { dateStyle: "short", timeStyle: "short" })}`}{" "}
+              · {result.dataFreshness.source}
             </span>
+
             {result.dataFreshness.stale && (
               <span className="inline-flex items-center gap-1 rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-warning">
                 <AlertTriangle className="h-3 w-3" /> Data mogelijk vertraagd
@@ -765,13 +769,16 @@ function AnalysePanel({
               </div>
               <div>
                 <p className="text-[10px] font-bold uppercase">Gecontroleerde voorspellingen</p>
-                <p className="text-sm font-semibold text-foreground tabular-nums">{getTrackingOverview(result.symbol, result.market).observations}</p>
-                <p className="text-[10px]">{getTrackingOverview(result.symbol, result.market).pending} lopen nog</p>
+                <p className="text-sm font-semibold text-foreground tabular-nums">{tracking.observations}</p>
+                <p className="text-[10px]">
+                  {tracking.pending} lopen nog · {tracking.awaiting} te beoordelen · {tracking.horizonChecks} horizon-controles
+                </p>
               </div>
             </div>
             <p className="mt-2">
-              Controle van 1u/4u/24u/1w/1m kost tijd: analyseer dit symbool later opnieuw, zodat er een echte vergelijkingskoers wordt opgehaald rond het einde van elke horizon.
+              Controle van 1u/4u/24u/1w/1m kost die tijd: analyseer dit symbool later opnieuw, zodat er rond het einde van elke horizon een echte vergelijkingskoers wordt opgehaald. Met alleen een dagslotkoers worden 1u en 4u niet getoetst.
             </p>
+
           </div>
 
           <ForecastTable
@@ -2026,8 +2033,9 @@ function AccuracyPanel({ result }: { result: AnalyzeResult }) {
             <thead>
               <tr className="border-b border-border/60 text-left text-xs uppercase tracking-wider text-muted-foreground">
                 <th className="py-2 pr-3 font-medium">Horizon</th>
-                <th className="py-2 px-3 text-right font-medium">Controles</th>
-                <th className="py-2 px-3 text-right font-medium">Lopend</th>
+                <th className="py-2 px-3 text-right font-medium">Waarnemingen</th>
+                <th className="py-2 px-3 text-right font-medium">Horizon-controles</th>
+                <th className="py-2 px-3 text-right font-medium">Lopend / te beoordelen</th>
                 <th className="py-2 px-3 text-right font-medium">Richting juist</th>
                 <th className="py-2 pl-3 text-right font-medium">Gem. fout</th>
               </tr>
@@ -2037,10 +2045,12 @@ function AccuracyPanel({ result }: { result: AnalyzeResult }) {
                 <tr key={h.key} className="border-b border-border/40 last:border-0">
                   <td className="py-2 pr-3 font-medium">{h.label}</td>
                   <td className="py-2 px-3 text-right tabular-nums">{h.observations}</td>
-                  <td className="py-2 px-3 text-right tabular-nums">{h.pending}</td>
+                  <td className="py-2 px-3 text-right tabular-nums">{h.modelChecks}</td>
+                  <td className="py-2 px-3 text-right tabular-nums">{h.pending} / {h.awaiting}</td>
                   <td className="py-2 px-3 text-right tabular-nums">
                     {h.sufficient && h.hitRate != null ? `${h.hitRate.toFixed(0)}%` : <span className="text-warning">{trackingLabel(h.observations)}</span>}
                   </td>
+
                   <td className="py-2 pl-3 text-right tabular-nums">
                     {h.sufficient && h.mae != null ? `${h.mae.toFixed(2)}%` : "—"}
                   </td>
