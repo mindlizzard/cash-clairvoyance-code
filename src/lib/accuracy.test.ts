@@ -158,7 +158,12 @@ describe("tellingen", () => {
         },
       ],
     });
-    const ov = getTrackingOverview("NVDA", "stock", arr);
+    let cur = arr;
+    for (const [hrs] of [[24], [24 * 7], [24 * 30]] as const) {
+      const t = T0 + hrs * H;
+      cur = scoreForecasts(cur, { symbol: "NVDA", market: "stock", currentPrice: 102, priceAt: t }, t).arr;
+    }
+    const ov = getTrackingOverview("NVDA", "stock", cur, T0 + 24 * 30 * H);
     expect(ov.observations).toBe(1);
     expect(ov.horizonChecks).toBe(3);
   });
@@ -169,7 +174,9 @@ describe("tellingen", () => {
       predictions: [{ key: "24u" as const, predictedPct: 1 }],
     }));
     const { arr } = log([], { entries });
-    const ov = getTrackingOverview("NVDA", "stock", arr);
+    const later = T0 + 24 * H;
+    const scored = scoreForecasts(arr, { symbol: "NVDA", market: "stock", currentPrice: 102, priceAt: later }, later).arr;
+    const ov = getTrackingOverview("NVDA", "stock", scored, later);
     expect(ov.observations).toBe(1);
     expect(ov.horizonChecks).toBe(10);
   });
