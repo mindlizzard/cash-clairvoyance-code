@@ -170,6 +170,54 @@ export const store = {
       write(s);
     }
   },
+
+  /** Atomair: import + eventuele vervangingen in één schrijfactie, of niets. */
+  applyImport(next: ImportedPositionRecord[], meta: ImportMeta, removePositionIds: string[] = []) {
+    const s = read();
+    const updated: Store = {
+      ...s,
+      portfolio: removePositionIds.length
+        ? s.portfolio.filter((p) => !removePositionIds.includes(p.id))
+        : s.portfolio,
+      imported: next,
+      importMeta: meta,
+    };
+    write(updated);
+  },
+  removeImported(id: string) {
+    const s = read();
+    s.imported = s.imported.filter((p) => p.id !== id);
+    write(s);
+  },
+  clearImported() {
+    const s = read();
+    s.imported = [];
+    s.importMeta = null;
+    write(s);
+  },
+  /** Volledige lokale data als JSON-tekst (backup vóór import). */
+  exportBackup(): string {
+    return JSON.stringify({ format: "beursziener-backup/v1", createdAt: Date.now(), store: read() }, null, 2);
+  },
+  /** Herstel uit een eerdere backup. Geeft false bij ongeldige backup; schrijft dan niets. */
+  restoreBackup(text: string): boolean {
+    try {
+      const parsed = JSON.parse(text);
+      const s = parsed?.format === "beursziener-backup/v1" ? parsed.store : parsed;
+      if (!s || typeof s !== "object") return false;
+      const next: Store = {
+        watchlist: Array.isArray(s.watchlist) ? s.watchlist : [],
+        portfolio: Array.isArray(s.portfolio) ? s.portfolio : [],
+        alerts: Array.isArray(s.alerts) ? s.alerts : [],
+        imported: Array.isArray(s.imported) ? s.imported : [],
+        importMeta: s.importMeta && typeof s.importMeta === "object" ? s.importMeta : null,
+      };
+      write(next);
+      return true;
+    } catch {
+      return false;
+    }
+  },
 };
 
 export function checkAlert(
