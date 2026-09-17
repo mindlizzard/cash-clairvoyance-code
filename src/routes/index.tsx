@@ -591,6 +591,8 @@ function AnalysePanel({
   onAlert: () => void;
 }) {
   const [section, setSection] = useState("overview");
+  const tracking = getTrackingOverview(result.symbol, result.market);
+
   const inWatch = useStore().watchlist.some(
     (w) => w.symbol === result.symbol && w.market === result.market,
   );
@@ -1574,7 +1576,7 @@ function ForecastTable({
                 <div>{f.model}</div>
                 <div className="text-[10px] text-muted-foreground">
                   {a && a.sufficient && a.hitRate != null && a.mae != null
-                    ? `${a.samples} controles · richting juist ${a.hitRate.toFixed(0)}% · MAE ${a.mae.toFixed(1)}%`
+                    ? `${a.observations} waarnemingen · ${a.samples} horizon-controles · richting juist ${a.hitRate.toFixed(0)}% · MAE ${a.mae.toFixed(1)}%`
                     : trackingLabel(a?.samples ?? 0)}
                   {w != null && ` · weegfactor (indicatief) ${(w * 100).toFixed(0)}%`}
                 </div>
